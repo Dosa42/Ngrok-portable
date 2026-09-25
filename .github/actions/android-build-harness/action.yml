@@ -231,7 +231,7 @@ runs:
         CI: "true"
       run: |
         set -Eeuo pipefail
-        "$GITHUB_ACTION_PATH/scripts/prepare-sdk.sh" \
+        bash "$GITHUB_ACTION_PATH/scripts/prepare-sdk.sh" \
           --sdk-root "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" \
           --doctor-report "$HARNESS_REPORT_DIR/environment-static.json" \
           --report "$HARNESS_REPORT_DIR/sdk-packages.txt" \

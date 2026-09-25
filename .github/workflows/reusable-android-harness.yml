@@ -68,7 +68,7 @@ permissions:
 jobs:
   android-build:
     name: Build ${{ inputs.target_repository }} (${{ inputs.variant }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
       contents: read
@@ -108,8 +108,8 @@ jobs:
       - name: Checkout build harness
         uses: actions/checkout@v7
         with:
-          repository: Dosa42/android-apk-build-harnes
-          ref: main
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
           path: harness
           persist-credentials: false
           fetch-depth: 1

@@ -50,11 +50,7 @@ Keep your answers direct, practical, and fast.
     val apiKey = (apiKeyOverride ?: BuildConfig.GEMINI_API_KEY).trim()
 
     if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-      // If user hasn't set GEMINI_API_KEY yet, provide a fast, helpful smart response based on prompt
-      val lastPrompt = history.lastOrNull { it.isUser }?.text ?: ""
-      val fallback = getSmartLocalResponse(lastPrompt)
-      val duration = System.currentTimeMillis() - startTime
-      return@withContext Pair(fallback, duration)
+      return@withContext Pair("Gemini Error: API key is not configured.", 0L)
     }
 
     try {
@@ -124,47 +120,9 @@ Keep your answers direct, practical, and fast.
   }
 
   suspend fun generateResponse(prompt: String): String {
-    val dummy = listOf(ChatMessageItem(text = prompt, isUser = true))
-    val (reply, _) = generateChatResponse(dummy)
+    val messages = listOf(ChatMessageItem(text = prompt, isUser = true))
+    val (reply, _) = generateChatResponse(messages)
     return reply
   }
 
-  private fun getSmartLocalResponse(prompt: String): String {
-    val lower = prompt.lowercase()
-    return when {
-      lower.contains("status") || lower.contains("tunnel") ->
-        "⚡ **Ngrok Tunnel Status**:\n" +
-        "• Embedded Local Server: Running on port 8085 (`http://127.0.0.1:8085`)\n" +
-        "• Auth Token: Pre-configured and portable!\n" +
-        "• Tap the **Start Tunnel** button above to initialize the public endpoint or manage lifecycle directly from the UI."
-
-      lower.contains("port") || lower.contains("8085") ->
-        "🔌 **Port 8085 Server**:\n" +
-        "The embedded HTTP server listens on port 8085. It exposes:\n" +
-        "• `/` - Web status dashboard & device info\n" +
-        "• `/ping` - Health check (pong)\n" +
-        "• `/api/chat` - External REST API to talk to Gemini directly via the tunnel!"
-
-      lower.contains("curl") || lower.contains("test") ->
-        "💻 **Curl Test Commands**:\n" +
-        "```bash\n" +
-        "# Test local server ping\n" +
-        "curl http://127.0.0.1:8085/ping\n\n" +
-        "# Post a message to the Gemini agent\n" +
-        "curl -X POST http://127.0.0.1:8085/api/chat \\\n" +
-        "  -H 'Content-Type: application/json' \\\n" +
-        "  -d '{\"message\":\"Hello from curl!\"}'\n" +
-        "```"
-
-      lower.contains("webhook") ->
-        "🪝 **Webhook Integration**:\n" +
-        "You can point GitHub, Stripe, Twilio, or Telegram webhooks directly to your public Ngrok tunnel URL! Forwarding sends HTTP POST payloads directly to `http://localhost:8085`, visible in the Live Traffic tab."
-
-      else ->
-        "⚡ **Copilot Ready (gemini-3.1-flash-lite)**:\n" +
-        "I'm your embedded assistant for the Ngrok tunnel and Android server. " +
-        "To enable online live Gemini API queries, ensure `GEMINI_API_KEY` is configured in the AI Studio Secrets panel.\n\n" +
-        "You can ask me about tunnel routing, webhook endpoints, curl tests, or network troubleshooting!"
-    }
-  }
 }

@@ -43,9 +43,7 @@ class NgrokTunnelService : Service() {
         val token = intent.getStringExtra(EXTRA_AUTH_TOKEN) ?: NgrokConfig.getAuthToken(this)
         val port = intent.getIntExtra(EXTRA_PORT, NgrokConfig.getLocalPort(this))
         startForeground(NOTIFICATION_ID, buildNotification("Initializing Ngrok Tunnel..."))
-        serviceScope.launch(Dispatchers.IO) {
-          NgrokTunnelManager.executeStartTunnel(applicationContext, token, port)
-        }
+        NgrokTunnelManager.executeStartTunnel(token, port)
       }
 
       ACTION_STOP_TUNNEL -> {
@@ -148,6 +146,7 @@ class NgrokTunnelService : Service() {
   override fun onDestroy() {
     super.onDestroy()
     Log.d(tag, "NgrokTunnelService destroyed")
+    NgrokTunnelManager.releaseResources()
     releaseWakeLock()
     serviceScope.cancel()
   }

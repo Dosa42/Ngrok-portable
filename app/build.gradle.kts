@@ -1,4 +1,7 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import org.gradle.api.file.ArchiveOperations
+import org.gradle.api.file.FileSystemOperations
+import javax.inject.Inject
 
 plugins {
   alias(libs.plugins.android.application)
@@ -7,6 +10,49 @@ plugins {
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
   alias(libs.plugins.google.services)
+}
+
+val ngrokNativeArm64 by configurations.creating { isTransitive = false }
+val ngrokNativeArmv7 by configurations.creating { isTransitive = false }
+abstract class ExtractNgrokJni : DefaultTask() {
+  @get:InputFiles abstract val arm64Artifacts: ConfigurableFileCollection
+  @get:InputFiles abstract val armv7Artifacts: ConfigurableFileCollection
+  @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+  @get:Inject abstract val archives: ArchiveOperations
+  @get:Inject abstract val files: FileSystemOperations
+
+  @TaskAction fun extract() {
+    files.sync {
+      into(outputDirectory)
+      from(archives.zipTree(arm64Artifacts.singleFile)) {
+        include("libngrok_java.so")
+        into("arm64-v8a")
+      }
+      from(archives.zipTree(armv7Artifacts.singleFile)) {
+        include("libngrok_java.so")
+        into("armeabi-v7a")
+      }
+    }
+  }
+}
+val ngrokNativeClasses by tasks.registering(Jar::class) {
+  archiveFileName.set("ngrok-native-android-classes.jar")
+  destinationDirectory.set(layout.buildDirectory.dir("generated/ngrok"))
+  from(provider { zipTree(ngrokNativeArm64.singleFile) }) {
+    include("com/**", "native.properties")
+    // Android loads installed JNI libraries; the upstream loader extracts and
+    // executes a library from a writable temporary directory.
+    exclude("com/ngrok/Runtime*.class")
+  }
+}
+val extractNgrokJni by tasks.registering(ExtractNgrokJni::class) {
+  arm64Artifacts.from(ngrokNativeArm64)
+  armv7Artifacts.from(ngrokNativeArmv7)
+  outputDirectory.set(layout.buildDirectory.dir("generated/ngrok/jniLibs"))
+}
+
+androidComponents.onVariants { variant ->
+  variant.sources.jniLibs?.addGeneratedSourceDirectory(extractNgrokJni, ExtractNgrokJni::outputDirectory)
 }
 
 android {
@@ -19,17 +65,18 @@ android {
     targetSdk = 36
     versionCode = 1
     versionName = "1.0"
+    ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      val keystorePath = System.getenv("ANDROID_RELEASE_KEYSTORE") ?: System.getenv("KEYSTORE_PATH")
+      if (!keystorePath.isNullOrBlank()) storeFile = file(keystorePath)
+      storePassword = System.getenv("ANDROID_RELEASE_STORE_PASSWORD") ?: System.getenv("STORE_PASSWORD")
+      keyAlias = System.getenv("ANDROID_RELEASE_KEY_ALIAS") ?: "upload"
+      keyPassword = System.getenv("ANDROID_RELEASE_KEY_PASSWORD") ?: System.getenv("KEY_PASSWORD")
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
@@ -49,6 +96,7 @@ android {
     debug { signingConfig = signingConfigs.getByName("debugConfig") }
   }
   compileOptions {
+    isCoreLibraryDesugaringEnabled = true
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
   }
@@ -120,6 +168,10 @@ dependencies {
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   implementation("com.ngrok:ngrok-java:1.0.0")
+  ngrokNativeArm64("com.ngrok:ngrok-java-native:1.0.0:linux-android-aarch_64")
+  ngrokNativeArmv7("com.ngrok:ngrok-java-native:1.0.0:linux-android-armv7")
+  implementation(files(ngrokNativeClasses))
+  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

@@ -26,4 +26,5 @@ __pycache__/
 harness-output/
 android-harness-output/
 android-engineer-log/
-
+*.jks
+*.p12

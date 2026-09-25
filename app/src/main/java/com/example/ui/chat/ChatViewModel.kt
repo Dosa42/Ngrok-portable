@@ -15,9 +15,8 @@ class ChatViewModel : ViewModel() {
   private val _messages = MutableStateFlow<List<ChatMessageItem>>(
     listOf(
       ChatMessageItem(
-        text = "Hello! I'm your ultra-fast Gemini Copilot powered by gemini-3.1-flash-lite. " +
-          "Your portable Ngrok tunnel is ready to start with embedded auth. " +
-          "Ask me anything about tunnel status, webhook setups, or curl tests!",
+        text = "The optional Gemini assistant requires a configured API key. " +
+          "The tunnel's live connection status is shown in Tunnel Control.",
         isUser = false
       )
     )

@@ -5,6 +5,13 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import com.example.gemini.GeminiService
+import com.ngrok.Session
+import com.ngrok.Forwarder
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,7 +32,9 @@ object NgrokTunnelManager {
   private var tunnelJob: Job? = null
 
   private var httpServer: EmbeddedHttpServer? = null
-  private var ngrokSession: Any? = null // com.ngrok.Session if available
+  private var ngrokSession: Session? = null
+  private var ngrokForwarder: Forwarder.Endpoint? = null
+  private val resourceMutex = Mutex()
 
   private val _state = MutableStateFlow<TunnelState>(TunnelState.Disconnected())
   val state: StateFlow<TunnelState> = _state.asStateFlow()
@@ -38,7 +47,7 @@ object NgrokTunnelManager {
 
   fun startTunnel(context: Context, authTokenOverride: String? = null, portOverride: Int? = null) {
     val currentState = _state.value
-    if (currentState is TunnelState.Connected || currentState is TunnelState.Connecting) {
+    if (currentState is TunnelState.Connected || currentState is TunnelState.Connecting || currentState is TunnelState.Stopping) {
       Log.d(TAG, "Tunnel already starting or running")
       return
     }
@@ -61,135 +70,106 @@ object NgrokTunnelManager {
         context.startService(serviceIntent)
       }
     } catch (e: Exception) {
-      Log.w(TAG, "Could not start foreground service immediately: ${e.message}")
+      _state.value = TunnelState.Error(e.message ?: "Could not start foreground service")
+      return
     }
 
-    tunnelJob?.cancel()
-    tunnelJob = coroutineScope.launch {
-      executeStartTunnel(context, token, port)
-    }
   }
 
-  suspend fun executeStartTunnel(context: Context, token: String, port: Int) {
-    withContext(Dispatchers.IO) {
-      try {
-        _state.value = TunnelState.Connecting("Binding local HTTP server on port $port...")
-
-        // 1. Stop existing server if any
-        httpServer?.stop()
-        httpServer = EmbeddedHttpServer(
-          port = port,
-          onRequestHandled = { entry ->
-            recordTraffic(entry)
-          },
-          onChatRequested = { prompt ->
-            try {
-              GeminiService.generateResponse(prompt)
-            } catch (e: Exception) {
-              "Error generating Gemini response: ${e.message}"
-            }
-          }
-        )
-        httpServer?.start()
-
-        _state.value = TunnelState.Connecting("Connecting Ngrok session with auth token...")
-
-        // 2. Attempt connection with ngrok-java SDK
-        var publicUrl: String? = null
-        var isNative = false
-
+  fun executeStartTunnel(token: String, port: Int) {
+    tunnelJob?.cancel()
+    tunnelJob = coroutineScope.launch {
+      resourceMutex.withLock {
         try {
-          // Dynamic reflection or direct call to com.ngrok.Session
-          val sessionClass = Class.forName("com.ngrok.Session")
-          val withAuthtokenMethod = sessionClass.getMethod("withAuthtoken", String::class.java)
-          val builder = withAuthtokenMethod.invoke(null, token)
-          val connectMethod = builder.javaClass.getMethod("connect")
-          val session = connectMethod.invoke(builder)
-          ngrokSession = session
+          require(token.isNotBlank()) { "Enter your ngrok authtoken first" }
+          require(port in 1..65535) { "Port must be between 1 and 65535" }
+          closeResources()
+          _state.value = TunnelState.Connecting("Binding local HTTP server on port $port...")
 
-          val httpEndpointMethod = session.javaClass.getMethod("httpEndpoint")
-          val endpointBuilder = httpEndpointMethod.invoke(session)
-          val forwardMethod = endpointBuilder.javaClass.getMethod("forward", URL::class.java)
-          val forwarder = forwardMethod.invoke(endpointBuilder, URL("http://localhost:$port"))
-          val getUrlMethod = forwarder.javaClass.getMethod("getUrl")
-          publicUrl = getUrlMethod.invoke(forwarder) as? String
-          isNative = true
-          Log.i(TAG, "Ngrok native session connected successfully! URL: $publicUrl")
-        } catch (t: Throwable) {
-          Log.w(TAG, "Ngrok Java native session initialization notice: ${t.message}. Operating in portable Android tunnel mode.")
-          // Generate active tunnel endpoint identifier for the token
-          val sanitizedSubdomain = "ngrok-agent-" + token.take(8).lowercase()
-          publicUrl = "https://$sanitizedSubdomain.ngrok-free.app"
-        }
-
-        val finalUrl = publicUrl ?: "https://ngrok-agent.ngrok-free.app"
-        _state.value = TunnelState.Connected(
-          publicUrl = finalUrl,
-          localPort = port,
-          connectedSince = System.currentTimeMillis(),
-          totalRequests = _totalRequests.value,
-          isNativeSession = isNative
-        )
-
-        recordTraffic(
-          TrafficLogEntry(
-            method = "SYSTEM",
-            path = "/tunnel/ready",
-            statusCode = 200,
-            clientIp = "127.0.0.1",
-            responseDurationMs = 0,
-            message = "Tunnel established at $finalUrl -> http://127.0.0.1:$port"
+          httpServer = EmbeddedHttpServer(
+            port = port,
+            onRequestHandled = { entry ->
+              recordTraffic(entry)
+            },
+            onChatRequested = { prompt ->
+              try {
+                GeminiService.generateResponse(prompt)
+              } catch (e: Exception) {
+                "Error generating Gemini response: ${e.message}"
+              }
+            }
           )
-        )
+          httpServer?.start()
 
-      } catch (e: Exception) {
-        Log.e(TAG, "Tunnel startup error: ${e.message}", e)
-        _state.value = TunnelState.Error(
-          errorMessage = e.message ?: "Failed to initialize tunnel"
-        )
+          _state.value = TunnelState.Connecting("Connecting Ngrok session with auth token...")
+
+          val session = Session.withAuthtoken(token).connect()
+          ngrokSession = session
+          currentCoroutineContext().ensureActive()
+          val forwarder = session.httpEndpoint().forward(URL("http://127.0.0.1:$port"))
+          ngrokForwarder = forwarder
+          currentCoroutineContext().ensureActive()
+          val finalUrl = forwarder.url
+          check(!finalUrl.isNullOrBlank()) { "ngrok returned no public URL" }
+          _state.value = TunnelState.Connected(
+            publicUrl = finalUrl,
+            localPort = port,
+            connectedSince = System.currentTimeMillis(),
+            totalRequests = _totalRequests.value,
+            isNativeSession = true
+          )
+
+          recordTraffic(
+            TrafficLogEntry(
+              method = "SYSTEM",
+              path = "/tunnel/ready",
+              statusCode = 200,
+              clientIp = "127.0.0.1",
+              responseDurationMs = 0,
+              message = "Tunnel established at $finalUrl -> http://127.0.0.1:$port"
+            )
+          )
+
+        } catch (e: CancellationException) {
+          closeResources()
+          throw e
+        } catch (e: Exception) {
+          closeResources()
+          Log.e(TAG, "Tunnel startup error", e)
+          _state.value = TunnelState.Error(e.message ?: "Failed to initialize tunnel")
+        } catch (e: LinkageError) {
+          closeResources()
+          Log.e(TAG, "Native ngrok library failed to load", e)
+          _state.value = TunnelState.Error("Native ngrok library failed to load: ${e.message}")
+        }
       }
     }
   }
 
   fun stopTunnel(context: Context) {
+    context.stopService(Intent(context, NgrokTunnelService::class.java))
+    releaseResources()
+  }
+
+  fun releaseResources() {
+    if (_state.value is TunnelState.Stopping || _state.value is TunnelState.Disconnected) return
     _state.value = TunnelState.Stopping()
-
-    try {
-      val serviceIntent = Intent(context, NgrokTunnelService::class.java).apply {
-        action = NgrokTunnelService.ACTION_STOP_TUNNEL
-      }
-      context.startService(serviceIntent)
-    } catch (_: Exception) {}
-
+    tunnelJob?.cancel()
     coroutineScope.launch {
-      withContext(Dispatchers.IO) {
-        try {
-          if (ngrokSession != null) {
-            try {
-              val closeMethod = ngrokSession?.javaClass?.getMethod("close")
-              closeMethod?.invoke(ngrokSession)
-            } catch (_: Exception) {}
-            ngrokSession = null
-          }
-          httpServer?.stop()
-          httpServer = null
-        } catch (e: Exception) {
-          Log.w(TAG, "Error stopping tunnel resources: ${e.message}")
-        } finally {
-          _state.value = TunnelState.Disconnected("Stopped by user")
-          recordTraffic(
-            TrafficLogEntry(
-              method = "SYSTEM",
-              path = "/tunnel/stopped",
-              statusCode = 200,
-              clientIp = "127.0.0.1",
-              responseDurationMs = 0,
-              message = "Tunnel and local HTTP server stopped"
-            )
-          )
-        }
+      resourceMutex.withLock {
+        closeResources()
+        _state.value = TunnelState.Disconnected("Stopped")
       }
     }
+  }
+
+  private fun closeResources() {
+    try { ngrokForwarder?.close() } catch (e: Exception) { Log.w(TAG, "Forwarder close failed", e) }
+    ngrokForwarder = null
+    try { ngrokSession?.close() } catch (e: Exception) { Log.w(TAG, "Session close failed", e) }
+    ngrokSession = null
+    httpServer?.stop()
+    httpServer = null
   }
 
   fun recordTraffic(entry: TrafficLogEntry) {

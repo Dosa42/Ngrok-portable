@@ -1,101 +1,30 @@
-# Android APK Build Harness
+# Ngrok Portable for Android
 
-[![Build Android APK](https://github.com/Dosa42/android-apk-build-harnes/actions/workflows/build-apk.yml/badge.svg)](https://github.com/Dosa42/android-apk-build-harnes/actions/workflows/build-apk.yml)
+Native Android app with an embedded HTTP server, ngrok tunnel controls and traffic logs.
 
-Een zelfstandige GitHub Actions-harness die een Android-repository uitleest, de vastgepinde Gradle/AGP/JDK/Android-SDK-combinatie bepaalt en daarna APK's bouwt en controleert. De target-repository wordt apart en zonder blijvende Git-credentials uitgecheckt; de harness commit of pusht daar nooit naartoe.
+## Release build
 
-## Snelste gebruik
+GitHub Actions → **Build Android APK** → **Run workflow** builds this repository by default with the `release` variant. The workflow is manual only. The harness comes from the same repository and workflow commit; it does not build unrelated repositories.
 
-1. Open **Actions** > **Build Android APK** > **Run workflow**.
-2. Laat de standaardwaarden staan voor een debugbuild van `Dosa42/Apk-builder-app`, of vul een andere `owner/repository` in. Unit-tests staan standaard uit; lint en DeX-audit staan aan.
-3. Klik **Run workflow**.
-4. Download na afloop het `*-apks`-artifact onderaan de workflow-run. Het `*-reports-and-logs`-artifact bevat de diagnose, test-, lint-, signing-, artifact- en DeX-rapporten.
+Configure these repository secrets for CI release signing:
 
-De standaarddebugbuild heeft geen signingsecret nodig. De harness maakt een tijdelijke standaard-debugkeystore buiten de target-checkout en verwijdert die na de run.
+- `ANDROID_RELEASE_KEYSTORE_BASE64`
+- `ANDROID_RELEASE_STORE_PASSWORD`
+- `ANDROID_RELEASE_KEY_PASSWORD`
+- `ANDROID_RELEASE_KEY_ALIAS`
 
-Tests zijn bewust een aparte schakelaar: een app met verouderde of kapotte testbron kan zo nog steeds een APK opleveren. Als je **Run tests** inschakelt, worden testfouten wel als workflowfout gerapporteerd, maar assemble, artifactcontrole en upload blijven doorgaan.
+Keep the same signing key for future updates. Never commit the keystore or its passwords. The release generated locally on 2026-09-25 uses a dedicated key; its private backup is delivered separately and must be supplied to these secrets for matching CI updates.
 
-## Wat automatisch wordt bepaald
+For a local build, install JDK 17, Android SDK platform 36.1 and Build Tools 36.0.0, set `ANDROID_HOME`, and provide `ANDROID_RELEASE_KEYSTORE`, `ANDROID_RELEASE_STORE_PASSWORD`, `ANDROID_RELEASE_KEY_PASSWORD` and `ANDROID_RELEASE_KEY_ALIAS`. Run:
 
-- de Gradle-versie uit de Gradle Wrapper van het project;
-- de Android Gradle Plugin-versie uit een version catalog, pluginblok of buildscript-classpath;
-- de bijpassende JDK op basis van een expliciete AGP-compatibiliteitsmatrix;
-- alle `com.android.application`-modules;
-- `compileSdk`, Build Tools en expliciet gebruikte NDK/CMake-versies;
-- echte assemble-, test-, lint- en bundletaken uit `./gradlew tasks --all`;
-- debug-, release- en flavored varianten zonder taaknamen te gokken;
-- Maven alleen wanneer het project werkelijk een `pom.xml` bevat.
-
-De harness gebruikt altijd de versiepin uit de Wrapper-properties van de target. Op GitHub wordt exact die officiële Gradle-distributie geïnstalleerd en gecontroleerd; target-owned Wrapper-JAR-code wordt daar niet uitgevoerd. Daardoor kan ook een beschadigde Wrapper-JAR veilig worden omzeild zonder Gradle, AGP of bronbestanden stilzwijgend bij te werken. Een onbekende of aantoonbaar incompatibele combinatie geeft een gerichte fout met een diagnoserapport.
-
-## Release-APK ondertekenen
-
-Maak in **Settings** > **Secrets and variables** > **Actions** deze repositorysecrets:
-
-| Secret | Betekenis |
-| --- | --- |
-| `ANDROID_RELEASE_KEYSTORE_BASE64` | De volledige keystore als base64 |
-| `ANDROID_RELEASE_STORE_PASSWORD` | Wachtwoord van de keystore |
-| `ANDROID_RELEASE_KEY_PASSWORD` | Wachtwoord van de sleutel |
-| `ANDROID_RELEASE_KEY_ALIAS` | Alias; standaardfallback is `upload` |
-
-Kies daarna `release` of `both` in **Run workflow**. Ontbrekende of ongeldige signinggegevens blokkeren een releasebuild vóór packaging. Geheimen worden niet in Gradle-commandoregels geplaatst en bekende secretwaarden worden uit bewaarde logs verwijderd.
-
-Voor een private target-repository kan optioneel `TARGET_REPO_TOKEN` worden toegevoegd met alleen leesrechten op die repository. Publieke targets hebben dit niet nodig.
-
-## Samsung DeX en Samsung SDK's
-
-Een normale Android-app heeft geen algemene “Samsung DeX SDK-library” nodig om in DeX te draaien. De harness voegt daarom geen willekeurige Samsung- of Knox-dependency aan een app toe. Als een app werkelijk een Samsung SDK gebruikt, moet die dependency en de bijbehorende Maven-repository in de Gradle-configuratie van die app staan; de Wrapper haalt hem dan normaal op.
-
-De ingebouwde DeX-audit controleert het uiteindelijke merged manifest op:
-
-- `targetSdkVersion >= 24`;
-- effectieve `resizeableActivity`-waarden;
-- vaste schermoriëntaties;
-- verplicht touchscreengebruik.
-
-Dit is een statische compatibiliteitscontrole. Responsief gedrag, toetsenbord/muis en echte DeX-uitvoering kunnen alleen betrouwbaar worden bevestigd op een DeX-capabel Samsung-toestel. Een gewone Android-emulator wordt nooit als een geslaagde Samsung DeX-runtime-test gerapporteerd.
-
-## Als herbruikbare workflow gebruiken
-
-Een andere workflow kan de harness zo aanroepen:
-
-```yaml
-jobs:
-  apk:
-    permissions:
-      contents: read
-    uses: Dosa42/android-apk-build-harnes/.github/workflows/reusable-android-harness.yml@main
-    with:
-      target_repository: owner/android-app
-      target_ref: main
-      variant: debug
-      dex_audit: true
-      run_tests: false
-      run_lint: true
-    secrets: inherit
+```sh
+./gradlew :app:assembleRelease
 ```
 
-De herbruikbare workflow uploadt APK's en diagnostiek en exposeert de artifactnamen plus de paden van het artifactmanifest en DeX-rapport.
+The APK is produced under `app/build/outputs/apk/release/`.
 
-## Bewijs en foutdiagnose
+## Native tunnel
 
-Elke run bewaart onder `android-harness-output`:
+The pinned ngrok Java SDK 1.0.0 and its Android JNI binaries are packaged for `arm64-v8a` and `armeabi-v7a`. The Android loader uses the APK-installed JNI library. The displayed public URL comes from the real ngrok forwarder; connection failures remain errors.
 
-- `artifacts/`: alleen APK/AAB-bestanden die aantoonbaar in de huidige run zijn gemaakt;
-- `reports/`: gedetecteerde omgeving, exacte SDK-packages, gekozen taken, buildstatus, SHA-256-hashes, signing/alignment en DeX-resultaat;
-- `logs/`: afzonderlijke Gradle-logs per taak.
-
-Een oude APK uit een cache of eerdere build wordt niet als nieuw resultaat geaccepteerd. De herhaalbare succes- en foutfixtures staan in `tests/`; een lokaal commandolog met machinepaden wordt bewust niet openbaar gecommit.
-
-Bij wijzigingen aan de harness op `main` draait na de bron- en regressietests automatisch een parallelle echte debug-smokebuild van `Dosa42/Apk-builder-app` en `Dosa42/voice-to-melodiSHEET`. Zo worden niet alleen de YAML, maar ook beide volledige Android-buildketens bewaakt.
-
-## Lokale broncontrole
-
-```bash
-python3 -m unittest discover -s tests -v
-bash -n .github/actions/android-build-harness/scripts/*.sh
-python3 -m compileall -q .github/actions/android-build-harness/scripts tests
-```
-
-De uitgevoerde verificaties voor de gepubliceerde versie staan in [VERIFICATION.md](VERIFICATION.md).
+Enter your ngrok authtoken in the app before connecting. A build and APK signature verification do not establish that a tunnel has been tested on a physical phone.
