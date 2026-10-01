@@ -7,7 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -20,8 +19,7 @@ import java.util.Locale
 
 class EmbeddedHttpServer(
   private val port: Int = 8085,
-  private val onRequestHandled: (TrafficLogEntry) -> Unit = {},
-  private val onChatRequested: suspend (String) -> String = { "Hello from Gemini on Android!" }
+  private val onRequestHandled: (TrafficLogEntry) -> Unit = {}
 ) {
   private val tag = "EmbeddedHttpServer"
   private var serverSocket: ServerSocket? = null
@@ -63,12 +61,14 @@ class EmbeddedHttpServer(
     }
   }
 
-  private suspend fun handleClient(socket: Socket) {
+  private fun handleClient(socket: Socket) {
     val startMs = System.currentTimeMillis()
     val clientIp = socket.inetAddress?.hostAddress ?: "127.0.0.1"
     var method = "GET"
     var path = "/"
     var statusCode = 200
+    val headers = mutableMapOf<String, String>()
+    var body = ""
 
     try {
       socket.use { s ->
@@ -92,14 +92,18 @@ class EmbeddedHttpServer(
         var line: String?
         while (reader.readLine().also { line = it } != null) {
           if (line.isNullOrBlank()) break
-          val lower = line!!.lowercase(Locale.US)
-          if (lower.startsWith("content-length:")) {
-            contentLength = line!!.substringAfter(":").trim().toIntOrNull() ?: 0
+          val colonIdx = line!!.indexOf(':')
+          if (colonIdx > 0) {
+            val key = line!!.substring(0, colonIdx).trim()
+            val value = line!!.substring(colonIdx + 1).trim()
+            headers[key] = value
+            if (key.equals("content-length", ignoreCase = true)) {
+              contentLength = value.toIntOrNull() ?: 0
+            }
           }
         }
 
-        // Read body if POST
-        var body = ""
+        // Read body if payload is present
         if (contentLength > 0 && contentLength < 100000) {
           val charBuf = CharArray(contentLength)
           var readTotal = 0
@@ -111,7 +115,7 @@ class EmbeddedHttpServer(
           body = String(charBuf, 0, readTotal)
         }
 
-        // Route handler
+        // Route handling
         when {
           path == "/ping" -> {
             statusCode = 200
@@ -120,86 +124,89 @@ class EmbeddedHttpServer(
               put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
               put("port", port)
               put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
-            }.toString()
+              put("timestamp", System.currentTimeMillis())
+            }.toString(2)
             sendResponse(output, 200, "application/json", json)
           }
 
           path == "/status" -> {
             statusCode = 200
+            val runtime = java.lang.Runtime.getRuntime()
             val json = JSONObject().apply {
-              put("service", "Android Ngrok Agent")
-              put("status", "running")
+              put("service", "Android Ngrok Portable Server")
+              put("status", "online")
               put("port", port)
               put("timestamp", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
               put("uptime_ms", System.currentTimeMillis() - startTime)
+              put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
               put("android_version", Build.VERSION.RELEASE)
-            }.toString()
+              put("sdk_int", Build.VERSION.SDK_INT)
+              put("memory_free_mb", runtime.freeMemory() / (1024 * 1024))
+              put("memory_total_mb", runtime.totalMemory() / (1024 * 1024))
+            }.toString(2)
             sendResponse(output, 200, "application/json", json)
           }
 
-          path.startsWith("/api/chat") && method == "POST" -> {
-            var prompt = "Hello"
-            try {
-              if (body.isNotBlank()) {
-                val jsonBody = JSONObject(body)
-                prompt = jsonBody.optString("message", jsonBody.optString("prompt", "Hello"))
-              }
-            } catch (_: Exception) {
-              prompt = body
-            }
-
-            val reply = withContext(Dispatchers.IO) {
-              onChatRequested(prompt)
-            }
-
+          path == "/echo" -> {
             statusCode = 200
-            val jsonResp = JSONObject().apply {
-              put("success", true)
-              put("model", "gemini-3.1-flash-lite")
-              put("prompt", prompt)
-              put("response", reply)
-            }.toString()
-            sendResponse(output, 200, "application/json", jsonResp)
+            val json = JSONObject().apply {
+              put("method", method)
+              put("path", path)
+              put("client_ip", clientIp)
+              put("headers", JSONObject(headers as Map<*, *>))
+              put("body", body)
+              put("timestamp", System.currentTimeMillis())
+            }.toString(2)
+            sendResponse(output, 200, "application/json", json)
+          }
+
+          path == "/headers" -> {
+            statusCode = 200
+            val json = JSONObject(headers as Map<*, *>).toString(2)
+            sendResponse(output, 200, "application/json", json)
           }
 
           else -> {
-            // Default home route: returns friendly HTML & JSON info
+            // Default Root Status Page
             statusCode = 200
             val html = """
               <!DOCTYPE html>
-              <html>
+              <html lang="en">
               <head>
                 <meta charset="utf-8">
-                <title>Android Ngrok Tunnel Agent</title>
+                <title>Ngrok Portable Android Server</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
                   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B1120; color: #E2E8F0; margin: 0; padding: 24px; }
                   .card { background: #1E293B; border-radius: 12px; padding: 24px; max-width: 600px; margin: 0 auto; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #334155; }
-                  h1 { color: #38BDF8; margin-top: 0; display: flex; align-items: center; gap: 8px; font-size: 24px; }
+                  h1 { color: #38BDF8; margin-top: 0; display: flex; align-items: center; gap: 8px; font-size: 22px; }
                   .badge { background: #0EA5E9; color: #0F172A; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: bold; }
-                  .code { background: #0F172A; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; color: #A7F3D0; overflow-x: auto; margin-top: 12px; }
+                  .code { background: #0F172A; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; color: #A7F3D0; overflow-x: auto; margin-top: 8px; }
                   .info-row { display: flex; justify-content: space-between; margin: 8px 0; border-bottom: 1px solid #334155; padding-bottom: 6px; font-size: 14px; }
-                  .endpoints a { color: #38BDF8; text-decoration: none; }
+                  .endpoints a { color: #38BDF8; text-decoration: none; font-weight: 500; }
                   .endpoints a:hover { text-decoration: underline; }
                 </style>
               </head>
               <body>
                 <div class="card">
-                  <h1>🚀 Android Ngrok Agent <span class="badge">ONLINE</span></h1>
-                  <p>Hello from <strong>ngrok-java</strong> embedded server running locally on Android!</p>
+                  <h1>🚀 Ngrok Portable Server <span class="badge">ONLINE</span></h1>
+                  <p>Native HTTP server running on Android, forwarded publicly via the <strong>ngrok-java</strong> SDK.</p>
                   
                   <div class="info-row"><span>Local Port:</span><span>$port</span></div>
                   <div class="info-row"><span>Device:</span><span>${Build.MANUFACTURER} ${Build.MODEL}</span></div>
-                  <div class="info-row"><span>Gemini Model:</span><span>gemini-3.1-flash-lite</span></div>
                   <div class="info-row"><span>Status:</span><span style="color: #4ADE80;">● Active & Forwarding</span></div>
                   
-                  <h3 style="margin-top: 20px; color: #94A3B8;">API Endpoints</h3>
+                  <h3 style="margin-top: 20px; color: #94A3B8;">Built-in Utility Endpoints</h3>
                   <div class="endpoints">
-                    <p>• <a href="/ping">/ping</a> - Health check</p>
-                    <p>• <a href="/status">/status</a> - Server diagnostics JSON</p>
-                    <p>• <code>POST /api/chat</code> - Direct query to Gemini Flash-Lite</p>
+                    <p>• <a href="/ping">/ping</a> &mdash; Fast JSON health check</p>
+                    <p>• <a href="/status">/status</a> &mdash; Detailed Android server telemetry</p>
+                    <p>• <a href="/echo">/echo</a> &mdash; Echoes method, headers, and payload (great for webhooks)</p>
+                    <p>• <a href="/headers">/headers</a> &mdash; Inspect request headers</p>
                   </div>
-                  <div class="code">curl -X POST https://YOUR_TUNNEL_URL/api/chat \<br>&nbsp;&nbsp;-H "Content-Type: application/json" \<br>&nbsp;&nbsp;-d '{"message":"Hello from webhook!"}'</div>
+                  
+                  <h3 style="margin-top: 20px; color: #94A3B8;">Sample Curl Commands</h3>
+                  <div class="code">curl -i https://YOUR_TUNNEL_URL/ping</div>
+                  <div class="code">curl -i -X POST https://YOUR_TUNNEL_URL/echo \<br>&nbsp;&nbsp;-H "Content-Type: application/json" \<br>&nbsp;&nbsp;-d '{"event":"webhook_received","source":"github"}'</div>
                 </div>
               </body>
               </html>
@@ -217,7 +224,9 @@ class EmbeddedHttpServer(
         path = path,
         statusCode = statusCode,
         clientIp = clientIp,
-        responseDurationMs = durationMs
+        responseDurationMs = durationMs,
+        headers = headers,
+        requestBody = if (body.isNotBlank()) body else null
       )
       onRequestHandled(entry)
     }

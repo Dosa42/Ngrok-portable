@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-import com.example.gemini.GeminiService
 import com.ngrok.Session
 import com.ngrok.Forwarder
 import kotlinx.coroutines.CancellationException
@@ -55,6 +54,11 @@ object NgrokTunnelManager {
     val token = (authTokenOverride ?: NgrokConfig.getAuthToken(context)).trim()
     val port = portOverride ?: NgrokConfig.getLocalPort(context)
 
+    if (token.isBlank()) {
+      _state.value = TunnelState.Error("Ngrok authtoken is required. Open Configuration to enter your token from dashboard.ngrok.com")
+      return
+    }
+
     _state.value = TunnelState.Connecting("Starting background tunnel service...")
 
     // Trigger Android Foreground Service to keep it alive
@@ -73,7 +77,6 @@ object NgrokTunnelManager {
       _state.value = TunnelState.Error(e.message ?: "Could not start foreground service")
       return
     }
-
   }
 
   fun executeStartTunnel(token: String, port: Int) {
@@ -90,18 +93,11 @@ object NgrokTunnelManager {
             port = port,
             onRequestHandled = { entry ->
               recordTraffic(entry)
-            },
-            onChatRequested = { prompt ->
-              try {
-                GeminiService.generateResponse(prompt)
-              } catch (e: Exception) {
-                "Error generating Gemini response: ${e.message}"
-              }
             }
           )
           httpServer?.start()
 
-          _state.value = TunnelState.Connecting("Connecting Ngrok session with auth token...")
+          _state.value = TunnelState.Connecting("Connecting native Ngrok session...")
 
           val session = Session.withAuthtoken(token).connect()
           ngrokSession = session
@@ -126,7 +122,7 @@ object NgrokTunnelManager {
               statusCode = 200,
               clientIp = "127.0.0.1",
               responseDurationMs = 0,
-              message = "Tunnel established at $finalUrl -> http://127.0.0.1:$port"
+              message = "Tunnel established: $finalUrl -> http://127.0.0.1:$port"
             )
           )
 

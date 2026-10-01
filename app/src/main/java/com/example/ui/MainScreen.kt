@@ -13,10 +13,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,11 +40,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.tunnel.NgrokTunnelManager
 import com.example.tunnel.TunnelState
-import com.example.ui.chat.ChatViewModel
-import com.example.ui.components.ChatSection
+import com.example.ui.components.EndpointsTesterSection
 import com.example.ui.components.TrafficLogsSection
 import com.example.ui.components.TunnelControlCard
 import com.example.ui.theme.StatusAmber
@@ -54,9 +51,7 @@ import com.example.ui.theme.StatusRed
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(
-  chatViewModel: ChatViewModel = viewModel()
-) {
+fun MainScreen() {
   val tunnelState by NgrokTunnelManager.state.collectAsState()
   var selectedTab by remember { mutableIntStateOf(0) }
 
@@ -119,32 +114,7 @@ fun MainScreen(
         },
         colors = TopAppBarDefaults.topAppBarColors(
           containerColor = MaterialTheme.colorScheme.surface
-        ),
-        actions = {
-          Box(
-            modifier = Modifier
-              .padding(end = 12.dp)
-              .clip(RoundedCornerShape(12.dp))
-              .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
-              .padding(horizontal = 8.dp, vertical = 4.dp)
-          ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(
-                imageVector = Icons.Default.Bolt,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(14.dp)
-              )
-              Spacer(modifier = Modifier.width(2.dp))
-              Text(
-                text = "Flash-Lite",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-              )
-            }
-          }
-        }
+        )
       )
     }
   ) { innerPadding ->
@@ -176,12 +146,12 @@ fun MainScreen(
           onClick = { selectedTab = 0 },
           text = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(16.dp))
+              Icon(Icons.Default.PlayCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
               Spacer(modifier = Modifier.width(6.dp))
-              Text("Gemini Agent")
+              Text("Endpoints & Test")
             }
           },
-          modifier = Modifier.testTag("tab_gemini_chat")
+          modifier = Modifier.testTag("tab_endpoints_test")
         )
 
         Tab(
@@ -191,7 +161,7 @@ fun MainScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
               Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
               Spacer(modifier = Modifier.width(6.dp))
-              Text("Live Telemetry")
+              Text("Traffic Inspector")
             }
           },
           modifier = Modifier.testTag("tab_traffic_logs")
@@ -201,7 +171,7 @@ fun MainScreen(
       // Tab Content
       Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         when (selectedTab) {
-          0 -> ChatSection(viewModel = chatViewModel)
+          0 -> EndpointsTesterSection()
           1 -> TrafficLogsSection()
         }
       }

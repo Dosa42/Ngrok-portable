@@ -1,6 +1,6 @@
 {
   "name": "Ngrok Agent",
-  "description": "Portable embedded Ngrok tunnel manager with background service lifecycle controls and low-latency Gemini AI assistant.",
+  "description": "Portable embedded Ngrok tunnel manager with background service lifecycle controls, local HTTP server, and real-time traffic inspection.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

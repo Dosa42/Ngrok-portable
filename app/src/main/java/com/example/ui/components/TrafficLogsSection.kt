@@ -1,6 +1,12 @@
 package com.example.ui.components
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,10 +22,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Http
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -27,10 +37,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -50,6 +63,12 @@ fun TrafficLogsSection(
 ) {
   val logs by NgrokTunnelManager.trafficLogs.collectAsState()
   val totalRequests by NgrokTunnelManager.totalRequests.collectAsState()
+  var filterMethod by remember { mutableStateOf("ALL") }
+
+  val filteredLogs = remember(logs, filterMethod) {
+    if (filterMethod == "ALL") logs
+    else logs.filter { it.method.equals(filterMethod, ignoreCase = true) }
+  }
 
   Column(
     modifier = modifier
@@ -65,7 +84,7 @@ fun TrafficLogsSection(
     ) {
       Column {
         Text(
-          text = "Live Traffic & Telemetry",
+          text = "Traffic Inspector",
           style = MaterialTheme.typography.titleMedium,
           fontWeight = FontWeight.Bold
         )
@@ -88,9 +107,25 @@ fun TrafficLogsSection(
       }
     }
 
-    Spacer(modifier = Modifier.height(12.dp))
+    Spacer(modifier = Modifier.height(8.dp))
 
-    if (logs.isEmpty()) {
+    // Method Filter Chips
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+      listOf("ALL", "GET", "POST", "SYSTEM").forEach { method ->
+        FilterChip(
+          selected = filterMethod == method,
+          onClick = { filterMethod = method },
+          label = { Text(method, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+        )
+      }
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    if (filteredLogs.isEmpty()) {
       Box(
         modifier = Modifier
           .fillMaxWidth()
@@ -105,17 +140,17 @@ fun TrafficLogsSection(
             imageVector = Icons.Default.Http,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-            modifier = Modifier.size(48.dp)
+            modifier = Modifier.size(44.dp)
           )
           Spacer(modifier = Modifier.height(8.dp))
           Text(
-            text = "No traffic recorded yet",
+            text = if (logs.isEmpty()) "No traffic recorded yet" else "No matching requests for $filterMethod",
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface
           )
           Spacer(modifier = Modifier.height(4.dp))
           Text(
-            text = "Start the tunnel and send requests to port 8085 or your public URL to see live requests here.",
+            text = "Incoming requests forwarded through Ngrok or tested locally will appear here in real time.",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -129,7 +164,7 @@ fun TrafficLogsSection(
           .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        items(logs, key = { it.id }) { log ->
+        items(filteredLogs, key = { it.id }) { log ->
           TrafficLogItem(log = log)
         }
       }
@@ -139,6 +174,9 @@ fun TrafficLogsSection(
 
 @Composable
 fun TrafficLogItem(log: TrafficLogEntry) {
+  val context = LocalContext.current
+  var isExpanded by remember { mutableStateOf(false) }
+
   val methodColor = when (log.method) {
     "GET" -> MaterialTheme.colorScheme.primary
     "POST" -> StatusGreen
@@ -150,75 +188,143 @@ fun TrafficLogItem(log: TrafficLogEntry) {
   val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(log.timestamp))
 
   Card(
-    modifier = Modifier.fillMaxWidth(),
+    modifier = Modifier
+      .fillMaxWidth()
+      .clickable { isExpanded = !isExpanded },
     shape = RoundedCornerShape(10.dp),
     colors = CardDefaults.cardColors(
       containerColor = MaterialTheme.colorScheme.surface
     ),
     elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
   ) {
-    Row(
+    Column(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(12.dp),
-      verticalAlignment = Alignment.CenterVertically
+        .padding(12.dp)
     ) {
-      // Method Tag
-      Box(
-        modifier = Modifier
-          .clip(RoundedCornerShape(6.dp))
-          .background(methodColor.copy(alpha = 0.15f))
-          .padding(horizontal = 8.dp, vertical = 3.dp)
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Text(
-          text = log.method,
-          fontSize = 11.sp,
-          fontWeight = FontWeight.Bold,
-          color = methodColor
-        )
-      }
-
-      Spacer(modifier = Modifier.width(10.dp))
-
-      // Path & Message
-      Column(modifier = Modifier.weight(1f)) {
-        Text(
-          text = log.path,
-          fontFamily = FontFamily.Monospace,
-          fontSize = 13.sp,
-          fontWeight = FontWeight.SemiBold,
-          color = MaterialTheme.colorScheme.onSurface
-        )
-        if (log.message != null) {
+        // Method Tag
+        Box(
+          modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(methodColor.copy(alpha = 0.15f))
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+        ) {
           Text(
-            text = log.message,
+            text = log.method,
             fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            fontWeight = FontWeight.Bold,
+            color = methodColor
           )
-        } else {
+        }
+
+        Spacer(modifier = Modifier.width(10.dp))
+
+        // Path & Client info
+        Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = "From ${log.clientIp} • ${log.responseDurationMs}ms",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = log.path,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+          )
+          if (log.message != null) {
+            Text(
+              text = log.message,
+              fontSize = 11.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+          } else {
+            Text(
+              text = "${log.clientIp} • ${log.responseDurationMs}ms",
+              fontSize = 11.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+          }
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        // Status Code & Timestamp & Expand Chevron
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Column(horizontalAlignment = Alignment.End) {
+            Text(
+              text = "${log.statusCode}",
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold,
+              color = statusColor
+            )
+            Text(
+              text = timeStr,
+              fontSize = 10.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+          }
+
+          Icon(
+            imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp).padding(start = 4.dp)
           )
         }
       }
 
-      Spacer(modifier = Modifier.width(8.dp))
+      // Expandable Details (Headers, Body)
+      AnimatedVisibility(visible = isExpanded) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .padding(10.dp)
+        ) {
+          if (log.headers.isNotEmpty()) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text("Request Headers:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+              IconButton(
+                onClick = {
+                  val headerText = log.headers.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+                  val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                  cb.setPrimaryClip(ClipData.newPlainText("Headers", headerText))
+                  Toast.makeText(context, "Headers copied", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(20.dp)
+              ) {
+                Icon(Icons.Default.ContentCopy, contentDescription = "Copy headers", modifier = Modifier.size(12.dp))
+              }
+            }
 
-      // Status Code & Timestamp
-      Column(horizontalAlignment = Alignment.End) {
-        Text(
-          text = "${log.statusCode}",
-          fontSize = 12.sp,
-          fontWeight = FontWeight.Bold,
-          color = statusColor
-        )
-        Text(
-          text = timeStr,
-          fontSize = 10.sp,
-          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-        )
+            log.headers.forEach { (k, v) ->
+              Text(
+                text = "$k: $v",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+          }
+
+          if (!log.requestBody.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Request Body:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            Text(
+              text = log.requestBody,
+              fontFamily = FontFamily.Monospace,
+              fontSize = 11.sp,
+              color = MaterialTheme.colorScheme.onSurface
+            )
+          }
+        }
       }
     }
   }

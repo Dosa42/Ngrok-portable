@@ -22,5 +22,7 @@ data class TrafficLogEntry(
   val statusCode: Int,
   val clientIp: String,
   val responseDurationMs: Long,
+  val headers: Map<String, String> = emptyMap(),
+  val requestBody: String? = null,
   val message: String? = null
 )

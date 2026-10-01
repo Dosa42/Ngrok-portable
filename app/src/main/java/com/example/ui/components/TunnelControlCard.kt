@@ -23,13 +23,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
@@ -59,6 +58,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,6 +82,7 @@ fun TunnelControlCard(
 
   var tokenInput by remember { mutableStateOf(NgrokConfig.getAuthToken(context)) }
   var portInput by remember { mutableStateOf(NgrokConfig.getLocalPort(context).toString()) }
+  var hideToken by remember { mutableStateOf(true) }
   var pingResult by remember { mutableStateOf<String?>(null) }
   var isTestingPing by remember { mutableStateOf(false) }
 
@@ -129,7 +131,7 @@ fun TunnelControlCard(
           )
           Spacer(modifier = Modifier.width(8.dp))
           Text(
-            text = "Ngrok Tunnel Lifecycle",
+            text = "Tunnel Lifecycle",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
           )
@@ -171,9 +173,14 @@ fun TunnelControlCard(
               NgrokTunnelManager.stopTunnel(context)
             } else {
               val port = portInput.toIntOrNull() ?: 8085
-              NgrokConfig.setAuthToken(context, tokenInput)
-              NgrokConfig.setLocalPort(context, port)
-              NgrokTunnelManager.startTunnel(context, tokenInput, port)
+              if (tokenInput.isBlank()) {
+                showSettings = true
+                Toast.makeText(context, "Please enter your Ngrok Authtoken", Toast.LENGTH_LONG).show()
+              } else {
+                NgrokConfig.setAuthToken(context, tokenInput)
+                NgrokConfig.setLocalPort(context, port)
+                NgrokTunnelManager.startTunnel(context, tokenInput, port)
+              }
             }
           },
           modifier = Modifier
@@ -364,31 +371,49 @@ fun TunnelControlCard(
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             .padding(14.dp)
         ) {
-          Text(
-            text = "PORTABLE CONFIGURATION",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-            letterSpacing = 1.sp
-          )
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = "TUNNEL CONFIGURATION",
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              color = MaterialTheme.colorScheme.primary,
+              letterSpacing = 1.sp
+            )
 
-          Spacer(modifier = Modifier.height(8.dp))
+            TextButton(
+              onClick = {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://dashboard.ngrok.com/get-started/your-authtoken"))
+                context.startActivity(intent)
+              }
+            ) {
+              Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Get Token", fontSize = 11.sp)
+            }
+          }
+
+          Spacer(modifier = Modifier.height(4.dp))
 
           OutlinedTextField(
             value = tokenInput,
-            onValueChange = { tokenInput = it },
-            label = { Text("Ngrok Auth Token (Embedded)") },
+            onValueChange = {
+              tokenInput = it
+              NgrokConfig.setAuthToken(context, it)
+            },
+            label = { Text("Ngrok Auth Token") },
+            placeholder = { Text("Paste your auth token here") },
             modifier = Modifier
               .fillMaxWidth()
               .testTag("auth_token_input"),
             singleLine = true,
+            visualTransformation = if (hideToken) PasswordVisualTransformation() else VisualTransformation.None,
             trailingIcon = {
-              TextButton(onClick = {
-                tokenInput = NgrokConfig.DEFAULT_AUTH_TOKEN
-                NgrokConfig.setAuthToken(context, NgrokConfig.DEFAULT_AUTH_TOKEN)
-                Toast.makeText(context, "Reset to embedded token", Toast.LENGTH_SHORT).show()
-              }) {
-                Text("Reset", fontSize = 11.sp)
+              TextButton(onClick = { hideToken = !hideToken }) {
+                Text(if (hideToken) "Show" else "Hide", fontSize = 11.sp)
               }
             }
           )
@@ -401,8 +426,11 @@ fun TunnelControlCard(
           ) {
             OutlinedTextField(
               value = portInput,
-              onValueChange = { portInput = it },
-              label = { Text("Local HTTP Port") },
+              onValueChange = {
+                portInput = it
+                it.toIntOrNull()?.let { p -> NgrokConfig.setLocalPort(context, p) }
+              },
+              label = { Text("Local Port") },
               modifier = Modifier
                 .weight(1f)
                 .testTag("port_input"),
