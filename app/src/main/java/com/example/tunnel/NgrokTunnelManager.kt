@@ -8,6 +8,7 @@ import com.ngrok.Session
 import com.ngrok.Forwarder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -31,6 +32,7 @@ object NgrokTunnelManager {
   private var tunnelJob: Job? = null
 
   private var httpServer: EmbeddedHttpServer? = null
+  private var currentServerPort: Int = 8085
   private var ngrokSession: Session? = null
   private var ngrokForwarder: Forwarder.Endpoint? = null
   private val resourceMutex = Mutex()
@@ -45,19 +47,21 @@ object NgrokTunnelManager {
   val totalRequests: StateFlow<Int> = _totalRequests.asStateFlow()
 
   fun ensureLocalServerRunning(port: Int) {
-    if (httpServer?.isRunning == true) return
+    if (httpServer?.isRunning == true && currentServerPort == port) return
     coroutineScope.launch {
       resourceMutex.withLock {
-        if (httpServer?.isRunning == true) return@withLock
+        if (httpServer?.isRunning == true && currentServerPort == port) return@withLock
         try {
+          httpServer?.stop()
           httpServer = EmbeddedHttpServer(
             port = port,
             onRequestHandled = { entry -> recordTraffic(entry) }
           )
           httpServer?.start()
+          currentServerPort = port
           Log.i(TAG, "Local companion HTTP server started on port $port")
         } catch (e: Exception) {
-          Log.w(TAG, "Could not start initial local HTTP server on port $port: ${e.message}")
+          Log.w(TAG, "Could not start local HTTP server on port $port: ${e.message}")
         }
       }
     }
@@ -105,14 +109,21 @@ object NgrokTunnelManager {
         try {
           require(token.isNotBlank()) { "Enter your ngrok authtoken first" }
           require(port in 1..65535) { "Port must be between 1 and 65535" }
-          
-          if (httpServer == null || httpServer?.isRunning == false) {
+
+          // 1. Explicitly load and initialize the native ngrok JNI runtime
+          _state.value = TunnelState.Connecting("Initializing native Ngrok JNI runtime...")
+          com.ngrok.Runtime.load()
+
+          // 2. Ensure the local embedded HTTP server is running on the target port
+          if (httpServer == null || httpServer?.isRunning == false || currentServerPort != port) {
             _state.value = TunnelState.Connecting("Binding local HTTP server on port $port...")
+            httpServer?.stop()
             httpServer = EmbeddedHttpServer(
               port = port,
               onRequestHandled = { entry -> recordTraffic(entry) }
             )
             httpServer?.start()
+            currentServerPort = port
           }
 
           _state.value = TunnelState.Connecting("Connecting native Ngrok session...")
@@ -151,10 +162,10 @@ object NgrokTunnelManager {
           closeTunnelResourcesOnly()
           Log.e(TAG, "Tunnel startup error", e)
           _state.value = TunnelState.Error(e.message ?: "Failed to initialize tunnel")
-        } catch (e: LinkageError) {
+        } catch (e: Throwable) {
           closeTunnelResourcesOnly()
-          Log.e(TAG, "Native ngrok library failed to load", e)
-          _state.value = TunnelState.Error("Native ngrok library failed to load: ${e.message}")
+          Log.e(TAG, "Native ngrok error", e)
+          _state.value = TunnelState.Error(e.message ?: "Native ngrok runtime error")
         }
       }
     }
@@ -189,7 +200,6 @@ object NgrokTunnelManager {
     _trafficLogs.update { current ->
       (listOf(entry) + current).take(100) // Keep last 100 entries
     }
-    // Update connected state request count
     val curr = _state.value
     if (curr is TunnelState.Connected) {
       _state.value = curr.copy(totalRequests = _totalRequests.value)
@@ -201,6 +211,24 @@ object NgrokTunnelManager {
   }
 
   suspend fun testLocalPing(port: Int): String = withContext(Dispatchers.IO) {
+    // If the local server is not running on this port, restart/bind it to this port
+    if (currentServerPort != port || httpServer?.isRunning != true) {
+      resourceMutex.withLock {
+        try {
+          httpServer?.stop()
+          httpServer = EmbeddedHttpServer(
+            port = port,
+            onRequestHandled = { entry -> recordTraffic(entry) }
+          )
+          httpServer?.start()
+          currentServerPort = port
+        } catch (e: Exception) {
+          Log.w(TAG, "Rebinding server for ping test failed: ${e.message}")
+        }
+      }
+      delay(150)
+    }
+
     try {
       val url = URL("http://127.0.0.1:$port/ping")
       val conn = url.openConnection() as HttpURLConnection

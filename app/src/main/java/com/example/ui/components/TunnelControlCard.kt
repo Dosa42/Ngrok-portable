@@ -428,7 +428,12 @@ fun TunnelControlCard(
               value = portInput,
               onValueChange = {
                 portInput = it
-                it.toIntOrNull()?.let { p -> NgrokConfig.setLocalPort(context, p) }
+                it.toIntOrNull()?.let { p ->
+                  if (p in 1..65535) {
+                    NgrokConfig.setLocalPort(context, p)
+                    NgrokTunnelManager.ensureLocalServerRunning(p)
+                  }
+                }
               },
               label = { Text("Local Port") },
               modifier = Modifier
