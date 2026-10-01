@@ -31,22 +31,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeveloperMode
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -72,6 +68,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.bridge.BridgeLogItem
 import com.example.bridge.BridgeSyncManager
 import com.example.bridge.UserscriptSource
 import com.example.tunnel.NgrokConfig
@@ -158,7 +155,7 @@ fun BridgeSyncGateScreen(
         Spacer(modifier = Modifier.height(14.dp))
 
         Text(
-          text = if (isSynced) "Userscript Bridge Synchronized!" else "Tampermonkey Bridge Required",
+          text = if (isSynced) "Proxy Redirect Userscript Synced!" else "Tampermonkey Bridge Required",
           style = MaterialTheme.typography.titleMedium,
           fontWeight = FontWeight.Bold,
           color = MaterialTheme.colorScheme.onSurface,
@@ -171,7 +168,7 @@ fun BridgeSyncGateScreen(
           text = if (isSynced)
             "Active session paired with ${clientInfo?.browser ?: "Browser"} • Latency ${clientInfo?.latencyMs ?: 0}ms"
           else
-            "This app requires an explicit green synchronization with the Tampermonkey Userscript running in your browser on port $localPort.",
+            "This app requires an explicit green synchronization with the compiled Proxy Redirect userscript running in your browser.",
           fontSize = 12.sp,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center,
@@ -182,7 +179,7 @@ fun BridgeSyncGateScreen(
 
     Spacer(modifier = Modifier.height(14.dp))
 
-    // Action Cards: Install / Copy Userscript
+    // 1-Click Install Actions (GreasyFork Style direct trigger)
     Card(
       modifier = Modifier.fillMaxWidth(),
       shape = RoundedCornerShape(14.dp),
@@ -192,7 +189,7 @@ fun BridgeSyncGateScreen(
     ) {
       Column(modifier = Modifier.padding(14.dp)) {
         Text(
-          text = "STEP 1: INSTALL USERSCRIPT",
+          text = "EMBEDDED USERSCRIPT (1-CLICK INSTALL)",
           fontSize = 11.sp,
           fontWeight = FontWeight.Bold,
           color = MaterialTheme.colorScheme.primary,
@@ -201,74 +198,96 @@ fun BridgeSyncGateScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        // Main 1-Click Install Button
+        Button(
+          onClick = {
+            try {
+              val url = "http://127.0.0.1:$localPort/Proxy-Redirect.user.js"
+              val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+              context.startActivity(browserIntent)
+            } catch (e: Exception) {
+              Toast.makeText(context, "Could not open browser: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+          },
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .testTag("one_click_install_button"),
+          shape = RoundedCornerShape(10.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = StatusGreen,
+            contentColor = Color.White
+          )
+        ) {
+          Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("⚡ 1-Click Install in Browser", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-          // Copy Userscript Code
-          Button(
-            onClick = {
-              val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-              cb.setPrimaryClip(ClipData.newPlainText("Userscript", UserscriptSource.SCRIPT_CONTENT))
-              Toast.makeText(context, "Copied Tampermonkey Userscript to clipboard!", Toast.LENGTH_SHORT).show()
-            },
-            modifier = Modifier.weight(1f).height(44.dp).testTag("copy_userscript_button"),
-            shape = RoundedCornerShape(10.dp)
-          ) {
-            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Copy Script", fontSize = 12.sp)
-          }
-
-          // Direct Install in Browser
+          // Open Built-in Web Installer Hub
           OutlinedButton(
             onClick = {
               try {
-                val url = "http://127.0.0.1:$localPort/userscript/ngrok-agent-bridge.user.js"
+                val url = "http://127.0.0.1:$localPort/"
                 val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 context.startActivity(browserIntent)
               } catch (e: Exception) {
-                Toast.makeText(context, "Could not launch browser: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Could not open browser: ${e.message}", Toast.LENGTH_SHORT).show()
               }
             },
-            modifier = Modifier.weight(1f).height(44.dp).testTag("install_userscript_button"),
-            shape = RoundedCornerShape(10.dp)
+            modifier = Modifier.weight(1f).height(40.dp).testTag("open_web_hub_button"),
+            shape = RoundedCornerShape(8.dp)
           ) {
-            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Install Link", fontSize = 12.sp)
+            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Web Installer", fontSize = 11.sp)
+          }
+
+          // Copy Script Code
+          OutlinedButton(
+            onClick = {
+              val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+              cb.setPrimaryClip(ClipData.newPlainText("Proxy-Redirect", UserscriptSource.SCRIPT_CONTENT))
+              Toast.makeText(context, "Copied userscript to clipboard!", Toast.LENGTH_SHORT).show()
+            },
+            modifier = Modifier.weight(1f).height(40.dp).testTag("copy_userscript_button"),
+            shape = RoundedCornerShape(8.dp)
+          ) {
+            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Copy Script", fontSize = 11.sp)
           }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
         // Test Local Ping
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          OutlinedButton(
-            onClick = {
-              isTestingPing = true
-              pingResult = null
-              scope.launch {
-                val res = NgrokTunnelManager.testLocalPing(localPort)
-                pingResult = res
-                isTestingPing = false
-              }
-            },
-            modifier = Modifier.weight(1f).height(40.dp).testTag("check_local_ping_button"),
-            shape = RoundedCornerShape(8.dp),
-            enabled = !isTestingPing
-          ) {
-            if (isTestingPing) {
-              CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-            } else {
-              Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-              Spacer(modifier = Modifier.width(4.dp))
-              Text("Test Server Port ($localPort)", fontSize = 11.sp)
+        OutlinedButton(
+          onClick = {
+            isTestingPing = true
+            pingResult = null
+            scope.launch {
+              val res = NgrokTunnelManager.testLocalPing(localPort)
+              pingResult = res
+              isTestingPing = false
             }
+          },
+          modifier = Modifier.fillMaxWidth().height(36.dp).testTag("check_local_ping_button"),
+          shape = RoundedCornerShape(8.dp),
+          enabled = !isTestingPing
+        ) {
+          if (isTestingPing) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+          } else {
+            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Test Local Server (Port $localPort)", fontSize = 11.sp)
           }
         }
 
@@ -394,7 +413,7 @@ fun BridgeSyncGateScreen(
 }
 
 @Composable
-fun BridgeLogItemRow(item: com.example.bridge.BridgeLogItem) {
+fun BridgeLogItemRow(item: BridgeLogItem) {
   val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(item.timestamp))
   val typeColor = when (item.type) {
     "HANDSHAKE" -> StatusGreen

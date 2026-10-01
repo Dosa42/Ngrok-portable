@@ -1,12 +1,3 @@
-package com.example.bridge
-
-import android.content.Context
-import java.io.InputStream
-
-object UserscriptSource {
-  const val SCRIPT_FILENAME = "Proxy-Redirect.user.js"
-
-  val SCRIPT_CONTENT = """
 // ==UserScript==
 // @name         Proxy Redirect (Ngrok Agent Synced Bridge)
 // @author       Schimon Jehudah, Adv. & Ngrok Agent Bridge
@@ -821,6 +812,4 @@ function notification(message, graphics) {
   if (gmNotification) {
     GM.notification(message, "🥸 Proxy Redirect", characterAsSvgDataUri(graphics));
   }
-}
-""".trimIndent()
 }

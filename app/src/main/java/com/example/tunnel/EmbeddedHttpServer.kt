@@ -126,9 +126,17 @@ class EmbeddedHttpServer(
 
         // Route handling
         when {
-          // 1. Tampermonkey Userscript Handshake
+          // 1. Raw 1-Click Userscript Distribution (Tampermonkey Auto-Interception endpoints)
+          path == "/Proxy-Redirect.user.js" ||
+          path == "/userscript/Proxy-Redirect.user.js" ||
+          path == "/userscript/ngrok-agent-bridge.user.js" -> {
+            statusCode = 200
+            sendScriptResponse(output, UserscriptSource.SCRIPT_CONTENT)
+          }
+
+          // 2. Tampermonkey Userscript Handshake
           path == "/api/bridge/handshake" && method == "POST" -> {
-            var scriptVersion = "1.0.0"
+            var scriptVersion = "26.08.24"
             var browser = "Tampermonkey Browser"
             var pageUrl = ""
             var pageTitle = ""
@@ -136,7 +144,7 @@ class EmbeddedHttpServer(
             try {
               if (body.isNotBlank()) {
                 val json = JSONObject(body)
-                scriptVersion = json.optString("script_version", "1.0.0")
+                scriptVersion = json.optString("script_version", "26.08.24")
                 browser = json.optString("browser", "Tampermonkey Browser")
                 pageUrl = json.optString("page_url", "")
                 pageTitle = json.optString("page_title", "")
@@ -154,7 +162,7 @@ class EmbeddedHttpServer(
             val jsonResp = JSONObject().apply {
               put("status", "synchronized")
               put("app", "Ngrok Agent Android")
-              put("version", "1.0.0")
+              put("version", "26.08.24")
               put("session_id", sessionId)
               put("server_timestamp", System.currentTimeMillis())
               put("heartbeat_interval_ms", 3000)
@@ -162,7 +170,7 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", jsonResp)
           }
 
-          // 2. Tampermonkey Userscript Heartbeat
+          // 3. Tampermonkey Userscript Heartbeat
           path == "/api/bridge/heartbeat" -> {
             var sessionId = ""
             var currentUrl = ""
@@ -183,7 +191,7 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", jsonResp)
           }
 
-          // 3. Bridge Status Check
+          // 4. Bridge Status Check
           path == "/api/bridge/status" -> {
             statusCode = 200
             val isSynced = BridgeSyncManager.isSynced.value
@@ -199,12 +207,6 @@ class EmbeddedHttpServer(
               }
             }.toString()
             sendResponse(output, 200, "application/json", jsonResp)
-          }
-
-          // 4. Raw Userscript Distribution for Direct 1-Click Install in Browser
-          path == "/userscript/ngrok-agent-bridge.user.js" -> {
-            statusCode = 200
-            sendResponse(output, 200, "text/javascript; charset=UTF-8", UserscriptSource.SCRIPT_CONTENT)
           }
 
           // 5. Ping
@@ -262,52 +264,96 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 9. Root HTML Status & Userscript Bridge Landing Page
+          // 9. Root GreasyFork-Style 1-Click Install Web Hub
           else -> {
             statusCode = 200
             val isSynced = BridgeSyncManager.isSynced.value
-            val bridgeStatusText = if (isSynced) "🟢 SYNCED" else "🟡 AWAITING USERSCRIPT"
+            val bridgeStatusBadge = if (isSynced)
+              """<span style="background: #10B981; color: #064E3B; padding: 4px 12px; border-radius: 999px; font-weight: bold; font-size: 13px;">🟢 SYNCHRONIZED</span>"""
+            else
+              """<span style="background: #F59E0B; color: #78350F; padding: 4px 12px; border-radius: 999px; font-weight: bold; font-size: 13px;">🟡 WAITING FOR TAMPERMONKEY</span>"""
+
             val html = """
               <!DOCTYPE html>
               <html lang="en">
               <head>
                 <meta charset="utf-8">
-                <title>Ngrok Agent & Userscript Bridge</title>
+                <title>Proxy Redirect — Ngrok Agent Synced Userscript</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
-                  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B1120; color: #E2E8F0; margin: 0; padding: 24px; }
-                  .card { background: #1E293B; border-radius: 12px; padding: 24px; max-width: 650px; margin: 0 auto; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #334155; }
-                  h1 { color: #38BDF8; margin-top: 0; display: flex; align-items: center; gap: 8px; font-size: 22px; }
-                  .badge { background: #0EA5E9; color: #0F172A; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: bold; }
-                  .badge-green { background: #10B981; color: #064E3B; }
-                  .badge-yellow { background: #F59E0B; color: #78350F; }
-                  .btn { display: inline-block; background: #0284C7; color: white; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 12px; font-size: 14px; }
-                  .btn:hover { background: #0369A1; }
-                  .code { background: #0F172A; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; color: #A7F3D0; overflow-x: auto; margin-top: 8px; }
-                  .info-row { display: flex; justify-content: space-between; margin: 8px 0; border-bottom: 1px solid #334155; padding-bottom: 6px; font-size: 14px; }
-                  .endpoints a { color: #38BDF8; text-decoration: none; font-weight: 500; }
-                  .endpoints a:hover { text-decoration: underline; }
+                  * { box-sizing: border-box; }
+                  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0F172A; color: #E2E8F0; margin: 0; padding: 20px; }
+                  .container { max-width: 780px; margin: 0 auto; background: #1E293B; border-radius: 16px; padding: 30px; box-shadow: 0 15px 35px rgba(0,0,0,0.5); border: 1px solid #334155; }
+                  .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; padding-bottom: 20px; margin-bottom: 20px; }
+                  h1 { margin: 0; color: #38BDF8; font-size: 24px; display: flex; align-items: center; gap: 10px; }
+                  .subtitle { color: #94A3B8; font-size: 14px; margin-top: 6px; }
+                  .install-hero { background: #0B1120; border: 2px dashed #0284C7; border-radius: 14px; padding: 24px; text-align: center; margin: 24px 0; }
+                  .install-btn { display: inline-block; background: #10B981; color: #064E3B; font-weight: 800; font-size: 18px; padding: 14px 28px; border-radius: 10px; text-decoration: none; box-shadow: 0 6px 20px rgba(16,185,129,0.4); transition: transform 0.15s ease; }
+                  .install-btn:hover { transform: translateY(-2px); background: #34D399; }
+                  .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 20px 0; }
+                  .meta-card { background: #0F172A; border-radius: 10px; padding: 14px; border: 1px solid #334155; font-size: 13px; }
+                  .meta-label { color: #94A3B8; margin-bottom: 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+                  .meta-val { color: #F1F5F9; font-weight: 600; }
+                  .step-box { background: #0F172A; border-radius: 10px; padding: 16px; margin-top: 20px; }
+                  .step-title { font-weight: bold; color: #38BDF8; margin-bottom: 8px; font-size: 14px; }
+                  code { background: #1E293B; padding: 2px 6px; border-radius: 4px; color: #A7F3D0; font-family: monospace; font-size: 12px; }
+                  .endpoint-list a { color: #38BDF8; text-decoration: none; }
                 </style>
               </head>
               <body>
-                <div class="card">
-                  <h1>⚡ Ngrok Agent Bridge <span class="badge ${if (isSynced) "badge-green" else "badge-yellow"}">$bridgeStatusText</span></h1>
-                  <p>Android Native Server & Tampermonkey Userscript Companion Bridge.</p>
-                  
-                  <div class="info-row"><span>Local HTTP Port:</span><span>$port</span></div>
-                  <div class="info-row"><span>Device:</span><span>${Build.MANUFACTURER} ${Build.MODEL}</span></div>
-                  <div class="info-row"><span>Bridge Status:</span><span>$bridgeStatusText</span></div>
-                  
-                  <h3 style="margin-top: 20px; color: #94A3B8;">Tampermonkey Userscript</h3>
-                  <p>Install the explicit synchronization userscript in Tampermonkey or Violentmonkey to pair this browser with your Ngrok Agent App:</p>
-                  <a href="/userscript/ngrok-agent-bridge.user.js" class="btn">📥 Install Userscript in Tampermonkey</a>
-                  
-                  <h3 style="margin-top: 24px; color: #94A3B8;">Built-in Bridge Endpoints</h3>
-                  <div class="endpoints">
-                    <p>• <code>POST /api/bridge/handshake</code> &mdash; Initiates browser handshake</p>
-                    <p>• <code>POST /api/bridge/heartbeat</code> &mdash; Synchronizes continuous connection</p>
-                    <p>• <a href="/api/bridge/status">/api/bridge/status</a> &mdash; Bridge synchronization diagnostic JSON</p>
-                    <p>• <a href="/ping">/ping</a> &mdash; Fast health check</p>
+                <div class="container">
+                  <div class="header">
+                    <div>
+                      <h1>🥸 Proxy Redirect</h1>
+                      <div class="subtitle">Hardcoded Synchronization Bridge & Companion for Ngrok Agent Android App</div>
+                    </div>
+                    <div>
+                      $bridgeStatusBadge
+                    </div>
+                  </div>
+
+                  <div class="install-hero">
+                    <p style="font-size: 15px; margin-top: 0; color: #CBD5E1;">
+                      Click below to trigger the native <strong>1-Click Tampermonkey / Violentmonkey</strong> installation dialog:
+                    </p>
+                    <a href="/Proxy-Redirect.user.js" class="install-btn">⚡ 1-Click Install Script</a>
+                    <p style="font-size: 12px; color: #64748B; margin-bottom: 0; margin-top: 12px;">
+                      Direct Script Endpoint: <code>http://127.0.0.1:$port/Proxy-Redirect.user.js</code>
+                    </p>
+                  </div>
+
+                  <div class="meta-grid">
+                    <div class="meta-card">
+                      <div class="meta-label">Version</div>
+                      <div class="meta-val">26.08.24-ngrok-bridge</div>
+                    </div>
+                    <div class="meta-card">
+                      <div class="meta-label">Local Host</div>
+                      <div class="meta-val">127.0.0.1:$port</div>
+                    </div>
+                    <div class="meta-card">
+                      <div class="meta-label">Bridge Handshake</div>
+                      <div class="meta-val">POST /api/bridge/handshake</div>
+                    </div>
+                    <div class="meta-card">
+                      <div class="meta-label">Android Device</div>
+                      <div class="meta-val">${Build.MANUFACTURER} ${Build.MODEL}</div>
+                    </div>
+                  </div>
+
+                  <div class="step-box">
+                    <div class="step-title">How 1-Click Synchronization Works:</div>
+                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">1. Make sure you have Tampermonkey or Violentmonkey installed in your browser.</p>
+                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">2. Click <strong>"1-Click Install Script"</strong> above — the extension will prompt you to confirm.</p>
+                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">3. As soon as you browse any page, the script discovers the Android app and unlocks the full Ngrok dashboard!</p>
+                  </div>
+
+                  <h3 style="margin-top: 24px; color: #94A3B8; font-size: 14px;">Built-in Server Endpoints:</h3>
+                  <div class="endpoint-list" style="font-size: 13px; line-height: 1.8;">
+                    <div>• <a href="/Proxy-Redirect.user.js">/Proxy-Redirect.user.js</a> &mdash; Exact Userscript Binary File</div>
+                    <div>• <a href="/ping">/ping</a> &mdash; Health Check</div>
+                    <div>• <a href="/status">/status</a> &mdash; Server Status & Telemetry</div>
+                    <div>• <a href="/api/bridge/status">/api/bridge/status</a> &mdash; Live Bridge Status JSON</div>
                   </div>
                 </div>
               </body>
@@ -334,12 +380,27 @@ class EmbeddedHttpServer(
     }
   }
 
+  private fun sendScriptResponse(output: OutputStream, scriptContent: String) {
+    val bytes = scriptContent.toByteArray(Charsets.UTF_8)
+    val headers = "HTTP/1.1 200 OK\r\n" +
+      "Content-Type: text/javascript; charset=UTF-8\r\n" +
+      "Content-Disposition: inline; filename=\"Proxy-Redirect.user.js\"\r\n" +
+      "Cache-Control: no-cache, no-store, must-revalidate\r\n" +
+      "Pragma: no-cache\r\n" +
+      "Expires: 0\r\n" +
+      "Access-Control-Allow-Origin: *\r\n" +
+      "Content-Length: ${bytes.size}\r\n" +
+      "Connection: close\r\n\r\n"
+    output.write(headers.toByteArray(Charsets.UTF_8))
+    output.write(bytes)
+    output.flush()
+  }
+
   private fun sendCorsPreflight(output: OutputStream) {
     val headers = "HTTP/1.1 204 No Content\r\n" +
       "Access-Control-Allow-Origin: *\r\n" +
-      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD\r\n" +
-      "Access-Control-Allow-Headers: Content-Type, Authorization, X-Ngrok-Agent-Bridge, Accept, Origin, User-Agent, X-Requested-With, *\r\n" +
-      "Access-Control-Expose-Headers: *\r\n" +
+      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n" +
+      "Access-Control-Allow-Headers: Content-Type, Authorization, X-Ngrok-Agent-Bridge\r\n" +
       "Access-Control-Max-Age: 86400\r\n" +
       "Content-Length: 0\r\n" +
       "Connection: close\r\n\r\n"
@@ -360,9 +421,8 @@ class EmbeddedHttpServer(
       "Content-Length: ${bytes.size}\r\n" +
       "Connection: close\r\n" +
       "Access-Control-Allow-Origin: *\r\n" +
-      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD\r\n" +
-      "Access-Control-Allow-Headers: Content-Type, Authorization, X-Ngrok-Agent-Bridge, Accept, Origin, User-Agent, X-Requested-With, *\r\n" +
-      "Access-Control-Expose-Headers: *\r\n" +
+      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n" +
+      "Access-Control-Allow-Headers: Content-Type, Authorization, X-Ngrok-Agent-Bridge\r\n" +
       "\r\n"
     output.write(headers.toByteArray(Charsets.UTF_8))
     output.write(bytes)
