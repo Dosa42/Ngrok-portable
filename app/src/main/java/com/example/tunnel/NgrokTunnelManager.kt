@@ -44,6 +44,25 @@ object NgrokTunnelManager {
   private val _totalRequests = MutableStateFlow(0)
   val totalRequests: StateFlow<Int> = _totalRequests.asStateFlow()
 
+  fun ensureLocalServerRunning(port: Int) {
+    if (httpServer?.isRunning == true) return
+    coroutineScope.launch {
+      resourceMutex.withLock {
+        if (httpServer?.isRunning == true) return@withLock
+        try {
+          httpServer = EmbeddedHttpServer(
+            port = port,
+            onRequestHandled = { entry -> recordTraffic(entry) }
+          )
+          httpServer?.start()
+          Log.i(TAG, "Local companion HTTP server started on port $port")
+        } catch (e: Exception) {
+          Log.w(TAG, "Could not start initial local HTTP server on port $port: ${e.message}")
+        }
+      }
+    }
+  }
+
   fun startTunnel(context: Context, authTokenOverride: String? = null, portOverride: Int? = null) {
     val currentState = _state.value
     if (currentState is TunnelState.Connected || currentState is TunnelState.Connecting || currentState is TunnelState.Stopping) {
@@ -86,16 +105,15 @@ object NgrokTunnelManager {
         try {
           require(token.isNotBlank()) { "Enter your ngrok authtoken first" }
           require(port in 1..65535) { "Port must be between 1 and 65535" }
-          closeResources()
-          _state.value = TunnelState.Connecting("Binding local HTTP server on port $port...")
-
-          httpServer = EmbeddedHttpServer(
-            port = port,
-            onRequestHandled = { entry ->
-              recordTraffic(entry)
-            }
-          )
-          httpServer?.start()
+          
+          if (httpServer == null || httpServer?.isRunning == false) {
+            _state.value = TunnelState.Connecting("Binding local HTTP server on port $port...")
+            httpServer = EmbeddedHttpServer(
+              port = port,
+              onRequestHandled = { entry -> recordTraffic(entry) }
+            )
+            httpServer?.start()
+          }
 
           _state.value = TunnelState.Connecting("Connecting native Ngrok session...")
 
@@ -127,14 +145,14 @@ object NgrokTunnelManager {
           )
 
         } catch (e: CancellationException) {
-          closeResources()
+          closeTunnelResourcesOnly()
           throw e
         } catch (e: Exception) {
-          closeResources()
+          closeTunnelResourcesOnly()
           Log.e(TAG, "Tunnel startup error", e)
           _state.value = TunnelState.Error(e.message ?: "Failed to initialize tunnel")
         } catch (e: LinkageError) {
-          closeResources()
+          closeTunnelResourcesOnly()
           Log.e(TAG, "Native ngrok library failed to load", e)
           _state.value = TunnelState.Error("Native ngrok library failed to load: ${e.message}")
         }
@@ -153,19 +171,17 @@ object NgrokTunnelManager {
     tunnelJob?.cancel()
     coroutineScope.launch {
       resourceMutex.withLock {
-        closeResources()
+        closeTunnelResourcesOnly()
         _state.value = TunnelState.Disconnected("Stopped")
       }
     }
   }
 
-  private fun closeResources() {
+  private fun closeTunnelResourcesOnly() {
     try { ngrokForwarder?.close() } catch (e: Exception) { Log.w(TAG, "Forwarder close failed", e) }
     ngrokForwarder = null
     try { ngrokSession?.close() } catch (e: Exception) { Log.w(TAG, "Session close failed", e) }
     ngrokSession = null
-    httpServer?.stop()
-    httpServer = null
   }
 
   fun recordTraffic(entry: TrafficLogEntry) {

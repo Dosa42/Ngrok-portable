@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,9 +19,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -48,8 +51,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.bridge.BridgeSyncManager
+import com.example.tunnel.NgrokConfig
 import com.example.tunnel.NgrokTunnelManager
 import com.example.tunnel.TunnelState
+import com.example.ui.components.BridgeSyncGateScreen
 import com.example.ui.components.EndpointsTesterSection
 import com.example.ui.components.TrafficLogsSection
 import com.example.ui.components.TunnelControlCard
@@ -62,7 +68,17 @@ import com.example.ui.theme.StatusRed
 fun MainScreen() {
   val context = LocalContext.current
   val tunnelState by NgrokTunnelManager.state.collectAsState()
+  val isBridgeSynced by BridgeSyncManager.isSynced.collectAsState()
+  val devBypass by BridgeSyncManager.devBypass.collectAsState()
+  val clientInfo by BridgeSyncManager.clientInfo.collectAsState()
+
   var selectedTab by remember { mutableIntStateOf(0) }
+  val localPort = NgrokConfig.getLocalPort(context)
+
+  // Start local companion server so it is ready to receive userscript handshakes
+  LaunchedEffect(localPort) {
+    NgrokTunnelManager.ensureLocalServerRunning(localPort)
+  }
 
   // Request notification permission for Foreground Service notification on Android 13+
   val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -88,6 +104,8 @@ fun MainScreen() {
     is TunnelState.Error -> StatusRed
     is TunnelState.Disconnected -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
   }
+
+  val isUnlocked = isBridgeSynced || devBypass
 
   Scaffold(
     topBar = {
@@ -138,6 +156,43 @@ fun MainScreen() {
             }
           }
         },
+        actions = {
+          // Userscript Bridge Status Chip in Header
+          val bridgeColor = when {
+            isBridgeSynced -> StatusGreen
+            devBypass -> StatusAmber
+            else -> MaterialTheme.colorScheme.error
+          }
+          val bridgeText = when {
+            isBridgeSynced -> "Bridge Synced"
+            devBypass -> "Dev Bypass"
+            else -> "Bridge Required"
+          }
+
+          Box(
+            modifier = Modifier
+              .padding(end = 12.dp)
+              .clip(RoundedCornerShape(12.dp))
+              .background(bridgeColor.copy(alpha = 0.15f))
+              .padding(horizontal = 8.dp, vertical = 4.dp)
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(
+                imageVector = if (isBridgeSynced) Icons.Default.CheckCircle else Icons.Default.Sync,
+                contentDescription = null,
+                tint = bridgeColor,
+                modifier = Modifier.size(13.dp)
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text(
+                text = bridgeText,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = bridgeColor
+              )
+            }
+          }
+        },
         colors = TopAppBarDefaults.topAppBarColors(
           containerColor = MaterialTheme.colorScheme.surface
         )
@@ -149,56 +204,61 @@ fun MainScreen() {
         .fillMaxSize()
         .padding(innerPadding)
     ) {
-      // Top Tunnel Lifecycle Control Hero Card
-      TunnelControlCard(
-        state = tunnelState,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-      )
+      if (!isUnlocked) {
+        // Gated Screen: Requires Userscript Bridge Synchronized connection
+        BridgeSyncGateScreen(modifier = Modifier.fillMaxSize())
+      } else {
+        // Unlocked Full Dashboard
+        TunnelControlCard(
+          state = tunnelState,
+          modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
 
-      // Navigation Tabs
-      TabRow(
-        selectedTabIndex = selectedTab,
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.primary,
-        indicator = { tabPositions ->
-          TabRowDefaults.SecondaryIndicator(
-            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-            color = MaterialTheme.colorScheme.primary
+        // Navigation Tabs
+        TabRow(
+          selectedTabIndex = selectedTab,
+          containerColor = MaterialTheme.colorScheme.surface,
+          contentColor = MaterialTheme.colorScheme.primary,
+          indicator = { tabPositions ->
+            TabRowDefaults.SecondaryIndicator(
+              modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+              color = MaterialTheme.colorScheme.primary
+            )
+          }
+        ) {
+          Tab(
+            selected = selectedTab == 0,
+            onClick = { selectedTab = 0 },
+            text = {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PlayCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Endpoints & Test")
+              }
+            },
+            modifier = Modifier.testTag("tab_endpoints_test")
+          )
+
+          Tab(
+            selected = selectedTab == 1,
+            onClick = { selectedTab = 1 },
+            text = {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Traffic Inspector")
+              }
+            },
+            modifier = Modifier.testTag("tab_traffic_logs")
           )
         }
-      ) {
-        Tab(
-          selected = selectedTab == 0,
-          onClick = { selectedTab = 0 },
-          text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(Icons.Default.PlayCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
-              Spacer(modifier = Modifier.width(6.dp))
-              Text("Endpoints & Test")
-            }
-          },
-          modifier = Modifier.testTag("tab_endpoints_test")
-        )
 
-        Tab(
-          selected = selectedTab == 1,
-          onClick = { selectedTab = 1 },
-          text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
-              Spacer(modifier = Modifier.width(6.dp))
-              Text("Traffic Inspector")
-            }
-          },
-          modifier = Modifier.testTag("tab_traffic_logs")
-        )
-      }
-
-      // Tab Content
-      Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-        when (selectedTab) {
-          0 -> EndpointsTesterSection()
-          1 -> TrafficLogsSection()
+        // Tab Content
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+          when (selectedTab) {
+            0 -> EndpointsTesterSection()
+            1 -> TrafficLogsSection()
+          }
         }
       }
     }
