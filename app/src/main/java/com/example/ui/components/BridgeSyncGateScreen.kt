@@ -35,7 +35,9 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeveloperMode
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
@@ -76,6 +78,7 @@ import com.example.tunnel.NgrokTunnelManager
 import com.example.ui.theme.StatusAmber
 import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusRed
+import com.example.util.LemurBrowserHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -93,6 +96,7 @@ fun BridgeSyncGateScreen(
   val logs by BridgeSyncManager.bridgeLogs.collectAsState()
 
   val localPort = NgrokConfig.getLocalPort(context)
+  val isLemurInstalled = remember { LemurBrowserHelper.isLemurInstalled(context) }
   var isTestingPing by remember { mutableStateOf(false) }
   var pingResult by remember { mutableStateOf<String?>(null) }
 
@@ -166,20 +170,37 @@ fun BridgeSyncGateScreen(
 
         Text(
           text = if (isSynced)
-            "Active session paired with ${clientInfo?.browser ?: "Browser"} • Latency ${clientInfo?.latencyMs ?: 0}ms"
+            "Active session paired with ${clientInfo?.browser ?: "Lemur Browser"} • Latency ${clientInfo?.latencyMs ?: 0}ms"
           else
-            "This app requires an explicit green synchronization with the compiled Proxy Redirect userscript running in your browser.",
+            "This app requires an explicit green synchronization with the Proxy Redirect userscript running in Lemur Browser / Tampermonkey.",
           fontSize = 12.sp,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center,
           lineHeight = 16.sp
         )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Lemur Browser Status Chip
+        Box(
+          modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isLemurInstalled) StatusGreen.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+        ) {
+          Text(
+            text = if (isLemurInstalled) "🌐 Lemur Browser (Default Detected)" else "🌐 Lemur Browser Recommended",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (isLemurInstalled) StatusGreen else MaterialTheme.colorScheme.primary
+          )
+        }
       }
     }
 
     Spacer(modifier = Modifier.height(14.dp))
 
-    // 1-Click Install Actions (GreasyFork Style direct trigger)
+    // 1-Click Install Actions targeting Lemur Browser
     Card(
       modifier = Modifier.fillMaxWidth(),
       shape = RoundedCornerShape(14.dp),
@@ -189,7 +210,7 @@ fun BridgeSyncGateScreen(
     ) {
       Column(modifier = Modifier.padding(14.dp)) {
         Text(
-          text = "EMBEDDED USERSCRIPT (1-CLICK INSTALL)",
+          text = "LEMUR BROWSER USERSCRIPT INSTALLER",
           fontSize = 11.sp,
           fontWeight = FontWeight.Bold,
           color = MaterialTheme.colorScheme.primary,
@@ -198,21 +219,16 @@ fun BridgeSyncGateScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Main 1-Click Install Button
+        // Main 1-Click Install Button targeting Lemur Browser
         Button(
           onClick = {
-            try {
-              val url = "http://127.0.0.1:$localPort/Proxy-Redirect.user.js"
-              val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-              context.startActivity(browserIntent)
-            } catch (e: Exception) {
-              Toast.makeText(context, "Could not open browser: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
+            val scriptUrl = "http://127.0.0.1:$localPort/Proxy-Redirect.user.js"
+            LemurBrowserHelper.openUrlInLemur(context, scriptUrl)
           },
           modifier = Modifier
             .fillMaxWidth()
             .height(48.dp)
-            .testTag("one_click_install_button"),
+            .testTag("one_click_install_lemur_button"),
           shape = RoundedCornerShape(10.dp),
           colors = ButtonDefaults.buttonColors(
             containerColor = StatusGreen,
@@ -221,7 +237,11 @@ fun BridgeSyncGateScreen(
         ) {
           Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
           Spacer(modifier = Modifier.width(6.dp))
-          Text("⚡ 1-Click Install in Browser", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+          Text(
+            text = if (isLemurInstalled) "⚡ 1-Click Install in Lemur Browser" else "⚡ 1-Click Install Script",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+          )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -230,38 +250,48 @@ fun BridgeSyncGateScreen(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-          // Open Built-in Web Installer Hub
+          // Open Built-in Web Installer in Lemur
           OutlinedButton(
             onClick = {
-              try {
-                val url = "http://127.0.0.1:$localPort/"
-                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                context.startActivity(browserIntent)
-              } catch (e: Exception) {
-                Toast.makeText(context, "Could not open browser: ${e.message}", Toast.LENGTH_SHORT).show()
-              }
+              val hubUrl = "http://127.0.0.1:$localPort/"
+              LemurBrowserHelper.openUrlInLemur(context, hubUrl)
             },
             modifier = Modifier.weight(1f).height(40.dp).testTag("open_web_hub_button"),
             shape = RoundedCornerShape(8.dp)
           ) {
             Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
             Spacer(modifier = Modifier.width(4.dp))
-            Text("Web Installer", fontSize = 11.sp)
+            Text("Web Hub (Lemur)", fontSize = 11.sp)
           }
 
-          // Copy Script Code
-          OutlinedButton(
-            onClick = {
-              val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-              cb.setPrimaryClip(ClipData.newPlainText("Proxy-Redirect", UserscriptSource.SCRIPT_CONTENT))
-              Toast.makeText(context, "Copied userscript to clipboard!", Toast.LENGTH_SHORT).show()
-            },
-            modifier = Modifier.weight(1f).height(40.dp).testTag("copy_userscript_button"),
-            shape = RoundedCornerShape(8.dp)
-          ) {
-            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-            Spacer(modifier = Modifier.width(4.dp))
-            Text("Copy Script", fontSize = 11.sp)
+          if (!isLemurInstalled) {
+            // Get Lemur Browser
+            OutlinedButton(
+              onClick = {
+                LemurBrowserHelper.openLemurPlayStore(context)
+              },
+              modifier = Modifier.weight(1f).height(40.dp).testTag("get_lemur_button"),
+              shape = RoundedCornerShape(8.dp)
+            ) {
+              Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Get Lemur", fontSize = 11.sp)
+            }
+          } else {
+            // Copy Script Code
+            OutlinedButton(
+              onClick = {
+                val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cb.setPrimaryClip(ClipData.newPlainText("Proxy-Redirect", UserscriptSource.SCRIPT_CONTENT))
+                Toast.makeText(context, "Copied userscript to clipboard!", Toast.LENGTH_SHORT).show()
+              },
+              modifier = Modifier.weight(1f).height(40.dp).testTag("copy_userscript_button"),
+              shape = RoundedCornerShape(8.dp)
+            ) {
+              Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Copy Script", fontSize = 11.sp)
+            }
           }
         }
 
@@ -349,7 +379,7 @@ fun BridgeSyncGateScreen(
           contentAlignment = Alignment.Center
         ) {
           Text(
-            text = "Listening on http://127.0.0.1:$localPort/api/bridge/handshake...",
+            text = "Listening for Lemur Browser Tampermonkey on port $localPort...",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontFamily = FontFamily.Monospace,

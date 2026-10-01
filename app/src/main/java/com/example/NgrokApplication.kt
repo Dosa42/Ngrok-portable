@@ -11,6 +11,12 @@ class NgrokApplication : Application() {
   override fun onCreate() {
     super.onCreate()
     createNotificationChannel()
+    try {
+      com.ngrok.Runtime.load()
+      android.util.Log.i("NgrokApplication", "Eagerly initialized ngrok native JNI runtime")
+    } catch (t: Throwable) {
+      android.util.Log.w("NgrokApplication", "Early native runtime initialization warning: ${t.message}")
+    }
   }
 
   private fun createNotificationChannel() {

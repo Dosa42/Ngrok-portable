@@ -4,6 +4,7 @@ import android.os.Build
 import android.util.Log
 import com.example.bridge.BridgeSyncManager
 import com.example.bridge.UserscriptSource
+import com.example.proxy.ReverseProxyManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,6 +16,7 @@ import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URLDecoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -106,7 +108,7 @@ class EmbeddedHttpServer(
         }
 
         // Read body if payload is present
-        if (contentLength > 0 && contentLength < 100000) {
+        if (contentLength > 0 && contentLength < 1000000) {
           val charBuf = CharArray(contentLength)
           var readTotal = 0
           while (readTotal < contentLength) {
@@ -124,18 +126,20 @@ class EmbeddedHttpServer(
           return
         }
 
+        val cleanPath = path.substringBefore("?")
+
         // Route handling
         when {
-          // 1. Raw 1-Click Userscript Distribution (Tampermonkey Auto-Interception endpoints)
-          path == "/Proxy-Redirect.user.js" ||
-          path == "/userscript/Proxy-Redirect.user.js" ||
-          path == "/userscript/ngrok-agent-bridge.user.js" -> {
+          // 1. Raw 1-Click Userscript Distribution
+          cleanPath == "/Proxy-Redirect.user.js" ||
+          cleanPath == "/userscript/Proxy-Redirect.user.js" ||
+          cleanPath == "/userscript/ngrok-agent-bridge.user.js" -> {
             statusCode = 200
             sendScriptResponse(output, UserscriptSource.SCRIPT_CONTENT)
           }
 
           // 2. Tampermonkey Userscript Handshake
-          path == "/api/bridge/handshake" && method == "POST" -> {
+          cleanPath == "/api/bridge/handshake" && method == "POST" -> {
             var scriptVersion = "26.08.24"
             var browser = "Tampermonkey Browser"
             var pageUrl = ""
@@ -166,12 +170,13 @@ class EmbeddedHttpServer(
               put("session_id", sessionId)
               put("server_timestamp", System.currentTimeMillis())
               put("heartbeat_interval_ms", 3000)
+              put("proxy_config", ReverseProxyManager.getFullConfigJson())
             }.toString()
             sendResponse(output, 200, "application/json", jsonResp)
           }
 
           // 3. Tampermonkey Userscript Heartbeat
-          path == "/api/bridge/heartbeat" -> {
+          cleanPath == "/api/bridge/heartbeat" -> {
             var sessionId = ""
             var currentUrl = ""
             try {
@@ -192,7 +197,7 @@ class EmbeddedHttpServer(
           }
 
           // 4. Bridge Status Check
-          path == "/api/bridge/status" -> {
+          cleanPath == "/api/bridge/status" -> {
             statusCode = 200
             val isSynced = BridgeSyncManager.isSynced.value
             val client = BridgeSyncManager.clientInfo.value
@@ -209,29 +214,92 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", jsonResp)
           }
 
-          // 5. Ping
-          path == "/ping" -> {
+          // 5. Reverse Proxy Configuration API (GET / POST)
+          cleanPath == "/api/proxy/config" -> {
+            statusCode = 200
+            val json = ReverseProxyManager.getFullConfigJson().toString(2)
+            sendResponse(output, 200, "application/json", json)
+          }
+
+          // 6. Reverse Proxy Offline Instance Report from Userscript
+          cleanPath == "/api/proxy/report-offline" && method == "POST" -> {
+            var targetInstance = ""
+            try {
+              if (body.isNotBlank()) {
+                val json = JSONObject(body)
+                targetInstance = json.optString("instance_url", "")
+              }
+            } catch (_: Exception) {}
+
+            if (targetInstance.isNotBlank()) {
+              // Mark dead instance & auto-switch
+              BridgeSyncManager.addLog("PROXY", "Userscript reported offline instance: $targetInstance")
+            }
+
+            statusCode = 200
+            val jsonResp = JSONObject().apply {
+              put("status", "acknowledged")
+              put("switched_instance", true)
+              put("config", ReverseProxyManager.getFullConfigJson())
+            }.toString()
+            sendResponse(output, 200, "application/json", jsonResp)
+          }
+
+          // 7. Dynamic In-App / In-Browser Reverse Proxy Execution Engine
+          // Format: /proxy?url=https://example.com/api or /proxy/forward?url=https://...
+          cleanPath == "/proxy" || cleanPath == "/proxy/forward" -> {
+            val query = if (path.contains("?")) path.substringAfter("?") else ""
+            var targetUrl = ""
+            query.split("&").forEach { param ->
+              val kv = param.split("=")
+              if (kv.isNotEmpty() && kv[0] == "url") {
+                targetUrl = if (kv.size > 1) {
+                  try { URLDecoder.decode(kv[1], "UTF-8") } catch (_: Exception) { kv[1] }
+                } else ""
+              }
+            }
+
+            if (targetUrl.isBlank()) {
+              statusCode = 400
+              sendResponse(output, 400, "application/json", """{"error": "Missing 'url' query parameter. Example: /proxy?url=https://api.example.com"}""")
+            } else {
+              val proxyResp = ReverseProxyManager.forwardHttpRequest(
+                method = method,
+                targetUrl = targetUrl,
+                incomingHeaders = headers,
+                requestBody = if (body.isNotBlank()) body else null,
+                clientIp = clientIp
+              )
+              statusCode = proxyResp.statusCode
+              sendRawProxyResponse(output, proxyResp.statusCode, proxyResp.headers, proxyResp.body, proxyResp.contentType)
+            }
+          }
+
+          // 8. Ping
+          cleanPath == "/ping" -> {
             statusCode = 200
             val json = JSONObject().apply {
               put("status", "pong")
               put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
               put("port", port)
               put("bridge_synced", BridgeSyncManager.isSynced.value)
+              put("proxy_rules_active", ReverseProxyManager.services.value.count { it.isEnabled })
               put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
               put("timestamp", System.currentTimeMillis())
             }.toString(2)
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 6. Diagnostics Status
-          path == "/status" -> {
+          // 9. Diagnostics Status
+          cleanPath == "/status" -> {
             statusCode = 200
             val runtime = java.lang.Runtime.getRuntime()
             val json = JSONObject().apply {
-              put("service", "Android Ngrok Portable Server")
+              put("service", "Android Ngrok Portable Server & Reverse Proxy")
               put("status", "online")
               put("port", port)
               put("bridge_synced", BridgeSyncManager.isSynced.value)
+              put("reverse_proxy_enabled", ReverseProxyManager.isGlobalEnabled.value)
               put("timestamp", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
               put("uptime_ms", System.currentTimeMillis() - startTime)
               put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
@@ -243,8 +311,8 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 7. Echo
-          path == "/echo" -> {
+          // 10. Echo
+          cleanPath == "/echo" -> {
             statusCode = 200
             val json = JSONObject().apply {
               put("method", method)
@@ -257,14 +325,14 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 8. Headers
-          path == "/headers" -> {
+          // 11. Headers
+          cleanPath == "/headers" -> {
             statusCode = 200
             val json = JSONObject(headers as Map<*, *>).toString(2)
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 9. Root GreasyFork-Style 1-Click Install Web Hub
+          // 12. Root GreasyFork-Style 1-Click Install Web Hub
           else -> {
             statusCode = 200
             val isSynced = BridgeSyncManager.isSynced.value
@@ -304,28 +372,21 @@ class EmbeddedHttpServer(
                 <div class="container">
                   <div class="header">
                     <div>
-                      <h1>🥸 Proxy Redirect</h1>
-                      <div class="subtitle">Hardcoded Synchronization Bridge & Companion for Ngrok Agent Android App</div>
+                      <h1>⚡ Proxy Redirect (Ngrok Synced)</h1>
+                      <div class="subtitle">Hardwired Android Companion Bridge & Reverse Proxy Hub</div>
                     </div>
-                    <div>
-                      $bridgeStatusBadge
-                    </div>
+                    <div>$bridgeStatusBadge</div>
                   </div>
 
                   <div class="install-hero">
-                    <p style="font-size: 15px; margin-top: 0; color: #CBD5E1;">
-                      Click below to trigger the native <strong>1-Click Tampermonkey / Violentmonkey</strong> installation dialog:
-                    </p>
-                    <a href="/Proxy-Redirect.user.js" class="install-btn">⚡ 1-Click Install Script</a>
-                    <p style="font-size: 12px; color: #64748B; margin-bottom: 0; margin-top: 12px;">
-                      Direct Script Endpoint: <code>http://127.0.0.1:$port/Proxy-Redirect.user.js</code>
-                    </p>
+                    <p style="font-size: 16px; margin-bottom: 18px; color: #CBD5E1;">Embedded in APK bundle &bull; Direct 1-Click Installation into Lemur / Tampermonkey</p>
+                    <a href="/Proxy-Redirect.user.js" class="install-btn">⚡ 1-Click Install Userscript</a>
                   </div>
 
                   <div class="meta-grid">
                     <div class="meta-card">
-                      <div class="meta-label">Version</div>
-                      <div class="meta-val">26.08.24-ngrok-bridge</div>
+                      <div class="meta-label">Userscript Version</div>
+                      <div class="meta-val">Proxy Redirect 26.08.24 (Synced)</div>
                     </div>
                     <div class="meta-card">
                       <div class="meta-label">Local Host</div>
@@ -336,24 +397,25 @@ class EmbeddedHttpServer(
                       <div class="meta-val">POST /api/bridge/handshake</div>
                     </div>
                     <div class="meta-card">
-                      <div class="meta-label">Android Device</div>
-                      <div class="meta-val">${Build.MANUFACTURER} ${Build.MODEL}</div>
+                      <div class="meta-label">Reverse Proxy Engine</div>
+                      <div class="meta-val">GET /proxy?url=...</div>
                     </div>
                   </div>
 
                   <div class="step-box">
                     <div class="step-title">How 1-Click Synchronization Works:</div>
-                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">1. Make sure you have Tampermonkey or Violentmonkey installed in your browser.</p>
-                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">2. Click <strong>"1-Click Install Script"</strong> above — the extension will prompt you to confirm.</p>
-                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">3. As soon as you browse any page, the script discovers the Android app and unlocks the full Ngrok dashboard!</p>
+                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">1. Make sure you have Tampermonkey installed in Lemur Browser or your browser.</p>
+                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">2. Click <strong>"1-Click Install Userscript"</strong> above &mdash; Tampermonkey will prompt you to confirm.</p>
+                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">3. As soon as you browse any page, the script discovers the Android app and unlocks the full Ngrok & Reverse Proxy dashboard!</p>
                   </div>
 
                   <h3 style="margin-top: 24px; color: #94A3B8; font-size: 14px;">Built-in Server Endpoints:</h3>
                   <div class="endpoint-list" style="font-size: 13px; line-height: 1.8;">
-                    <div>• <a href="/Proxy-Redirect.user.js">/Proxy-Redirect.user.js</a> &mdash; Exact Userscript Binary File</div>
+                    <div>• <a href="/Proxy-Redirect.user.js">/Proxy-Redirect.user.js</a> &mdash; Exact Userscript File</div>
+                    <div>• <a href="/api/proxy/config">/api/proxy/config</a> &mdash; Reverse Proxy Configuration JSON</div>
+                    <div>• <a href="/proxy?url=https%3A%2F%2Fexample.com">/proxy?url=...</a> &mdash; Reverse Proxy Forwarder</div>
                     <div>• <a href="/ping">/ping</a> &mdash; Health Check</div>
                     <div>• <a href="/status">/status</a> &mdash; Server Status & Telemetry</div>
-                    <div>• <a href="/api/bridge/status">/api/bridge/status</a> &mdash; Live Bridge Status JSON</div>
                   </div>
                 </div>
               </body>
@@ -399,8 +461,8 @@ class EmbeddedHttpServer(
   private fun sendCorsPreflight(output: OutputStream) {
     val headers = "HTTP/1.1 204 No Content\r\n" +
       "Access-Control-Allow-Origin: *\r\n" +
-      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n" +
-      "Access-Control-Allow-Headers: Content-Type, Authorization, X-Ngrok-Agent-Bridge\r\n" +
+      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH\r\n" +
+      "Access-Control-Allow-Headers: *\r\n" +
       "Access-Control-Max-Age: 86400\r\n" +
       "Content-Length: 0\r\n" +
       "Connection: close\r\n\r\n"
@@ -413,7 +475,9 @@ class EmbeddedHttpServer(
     val statusText = when (status) {
       200 -> "200 OK"
       204 -> "204 No Content"
+      400 -> "400 Bad Request"
       404 -> "404 Not Found"
+      502 -> "502 Bad Gateway"
       else -> "$status OK"
     }
     val headers = "HTTP/1.1 $statusText\r\n" +
@@ -421,10 +485,56 @@ class EmbeddedHttpServer(
       "Content-Length: ${bytes.size}\r\n" +
       "Connection: close\r\n" +
       "Access-Control-Allow-Origin: *\r\n" +
-      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n" +
-      "Access-Control-Allow-Headers: Content-Type, Authorization, X-Ngrok-Agent-Bridge\r\n" +
+      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH\r\n" +
+      "Access-Control-Allow-Headers: *\r\n" +
       "\r\n"
     output.write(headers.toByteArray(Charsets.UTF_8))
+    output.write(bytes)
+    output.flush()
+  }
+
+  private fun sendRawProxyResponse(
+    output: OutputStream,
+    status: Int,
+    headers: Map<String, String>,
+    body: String,
+    contentType: String
+  ) {
+    val bytes = body.toByteArray(Charsets.UTF_8)
+    val statusText = when (status) {
+      200 -> "200 OK"
+      201 -> "201 Created"
+      204 -> "204 No Content"
+      301 -> "301 Moved Permanently"
+      302 -> "302 Found"
+      304 -> "304 Not Modified"
+      400 -> "400 Bad Request"
+      401 -> "401 Unauthorized"
+      403 -> "403 Forbidden"
+      404 -> "404 Not Found"
+      500 -> "500 Internal Server Error"
+      502 -> "502 Bad Gateway"
+      503 -> "503 Service Unavailable"
+      else -> "$status Proxy Response"
+    }
+
+    val headerBuilder = StringBuilder("HTTP/1.1 $statusText\r\n")
+    headerBuilder.append("Content-Type: $contentType\r\n")
+    headerBuilder.append("Content-Length: ${bytes.size}\r\n")
+    headerBuilder.append("Access-Control-Allow-Origin: *\r\n")
+    headerBuilder.append("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH\r\n")
+    headerBuilder.append("Access-Control-Allow-Headers: *\r\n")
+    headerBuilder.append("Connection: close\r\n")
+
+    headers.forEach { (k, v) ->
+      val kl = k.lowercase(Locale.US)
+      if (kl != "content-type" && kl != "content-length" && kl != "connection" && kl != "access-control-allow-origin") {
+        headerBuilder.append("$k: $v\r\n")
+      }
+    }
+    headerBuilder.append("\r\n")
+
+    output.write(headerBuilder.toString().toByteArray(Charsets.UTF_8))
     output.write(bytes)
     output.flush()
   }

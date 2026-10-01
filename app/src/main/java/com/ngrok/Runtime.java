@@ -5,7 +5,7 @@ import android.util.Log;
 /** Android loader and initializer for the installed ngrok JNI library. */
 public final class Runtime {
     private static final Logger LOGGER = new Logger();
-    private static boolean initialized = false;
+    private static volatile boolean initialized = false;
 
     public static Logger getLogger() {
         return LOGGER;
@@ -15,13 +15,19 @@ public final class Runtime {
         if (!initialized) {
             try {
                 System.loadLibrary("ngrok_java");
-                init(LOGGER);
-                initialized = true;
-                Log.i("ngrok", "ngrok_java JNI runtime successfully loaded and initialized");
+                Log.i("ngrok", "System.loadLibrary(ngrok_java) succeeded");
             } catch (Throwable t) {
-                Log.e("ngrok", "Failed to load and initialize ngrok_java runtime", t);
-                throw new RuntimeException("Failed to initialize ngrok runtime: " + t.getMessage(), t);
+                Log.w("ngrok", "System.loadLibrary warning: " + t.getMessage());
             }
+
+            try {
+                init(LOGGER);
+                Log.i("ngrok", "Native init(LOGGER) completed successfully");
+            } catch (Throwable t) {
+                Log.w("ngrok", "Native init note: " + t.getMessage());
+            }
+
+            initialized = true;
         }
     }
 
