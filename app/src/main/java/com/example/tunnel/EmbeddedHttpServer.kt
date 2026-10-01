@@ -1,10 +1,12 @@
 package com.example.tunnel
 
+import android.content.Context
 import android.os.Build
 import android.util.Log
 import com.example.bridge.BridgeSyncManager
 import com.example.bridge.UserscriptSource
 import com.example.proxy.ReverseProxyManager
+import com.example.util.PhoneDeviceManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +25,7 @@ import java.util.Locale
 
 class EmbeddedHttpServer(
   private val port: Int = 8085,
+  private val context: Context? = null,
   private val onRequestHandled: (TrafficLogEntry) -> Unit = {}
 ) {
   private val tag = "EmbeddedHttpServer"
@@ -127,15 +130,20 @@ class EmbeddedHttpServer(
         }
 
         val cleanPath = path.substringBefore("?")
+        val hostHeader = headers["Host"] ?: headers["host"] ?: "127.0.0.1:$port"
+        val isSecure = headers["X-Forwarded-Proto"] == "https" || hostHeader.contains("ngrok")
+        val effectiveBaseUrl = (if (isSecure) "https://" else "http://") + hostHeader
 
         // Route handling
         when {
-          // 1. Raw 1-Click Userscript Distribution
+          // 1. Raw 1-Click Userscript Distribution (with Dynamic download URL based on accessed host)
           cleanPath == "/Proxy-Redirect.user.js" ||
           cleanPath == "/userscript/Proxy-Redirect.user.js" ||
           cleanPath == "/userscript/ngrok-agent-bridge.user.js" -> {
             statusCode = 200
-            sendScriptResponse(output, UserscriptSource.SCRIPT_CONTENT)
+            val dynamicScript = UserscriptSource.SCRIPT_CONTENT
+              .replace("http://127.0.0.1:8085/Proxy-Redirect.user.js", "$effectiveBaseUrl/Proxy-Redirect.user.js")
+            sendScriptResponse(output, dynamicScript)
           }
 
           // 2. Tampermonkey Userscript Handshake
@@ -171,6 +179,9 @@ class EmbeddedHttpServer(
               put("server_timestamp", System.currentTimeMillis())
               put("heartbeat_interval_ms", 3000)
               put("proxy_config", ReverseProxyManager.getFullConfigJson())
+              if (context != null) {
+                put("phone_telemetry", PhoneDeviceManager.getTelemetryJson(context))
+              }
             }.toString()
             sendResponse(output, 200, "application/json", jsonResp)
           }
@@ -214,14 +225,29 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", jsonResp)
           }
 
-          // 5. Reverse Proxy Configuration API (GET / POST)
+          // 5. Phone Device Telemetry API
+          cleanPath == "/api/phone/status" || cleanPath == "/api/phone/telemetry" -> {
+            statusCode = 200
+            val json = if (context != null) {
+              PhoneDeviceManager.getTelemetryJson(context)
+            } else {
+              JSONObject().apply {
+                put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
+                put("android_version", Build.VERSION.RELEASE)
+                put("sdk_int", Build.VERSION.SDK_INT)
+              }
+            }
+            sendResponse(output, 200, "application/json", json.toString(2))
+          }
+
+          // 6. Reverse Proxy Configuration API
           cleanPath == "/api/proxy/config" -> {
             statusCode = 200
             val json = ReverseProxyManager.getFullConfigJson().toString(2)
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 6. Reverse Proxy Offline Instance Report from Userscript
+          // 7. Reverse Proxy Offline Report from Userscript
           cleanPath == "/api/proxy/report-offline" && method == "POST" -> {
             var targetInstance = ""
             try {
@@ -231,22 +257,20 @@ class EmbeddedHttpServer(
               }
             } catch (_: Exception) {}
 
-            if (targetInstance.isNotBlank()) {
-              // Mark dead instance & auto-switch
+            if (targetInstance.isNotBlank() && context != null) {
+              ReverseProxyManager.handleReportOfflineInstance(context, targetInstance)
               BridgeSyncManager.addLog("PROXY", "Userscript reported offline instance: $targetInstance")
             }
 
             statusCode = 200
             val jsonResp = JSONObject().apply {
               put("status", "acknowledged")
-              put("switched_instance", true)
               put("config", ReverseProxyManager.getFullConfigJson())
             }.toString()
             sendResponse(output, 200, "application/json", jsonResp)
           }
 
-          // 7. Dynamic In-App / In-Browser Reverse Proxy Execution Engine
-          // Format: /proxy?url=https://example.com/api or /proxy/forward?url=https://...
+          // 8. Dynamic Reverse Proxy Forwarding Execution
           cleanPath == "/proxy" || cleanPath == "/proxy/forward" -> {
             val query = if (path.contains("?")) path.substringAfter("?") else ""
             var targetUrl = ""
@@ -275,7 +299,7 @@ class EmbeddedHttpServer(
             }
           }
 
-          // 8. Ping
+          // 9. Ping
           cleanPath == "/ping" -> {
             statusCode = 200
             val json = JSONObject().apply {
@@ -283,23 +307,21 @@ class EmbeddedHttpServer(
               put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
               put("port", port)
               put("bridge_synced", BridgeSyncManager.isSynced.value)
-              put("proxy_rules_active", ReverseProxyManager.services.value.count { it.isEnabled })
               put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
               put("timestamp", System.currentTimeMillis())
             }.toString(2)
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 9. Diagnostics Status
+          // 10. Diagnostics Status
           cleanPath == "/status" -> {
             statusCode = 200
             val runtime = java.lang.Runtime.getRuntime()
             val json = JSONObject().apply {
-              put("service", "Android Ngrok Portable Server & Reverse Proxy")
+              put("service", "Android Ngrok Portable Server, Phone Gateway & Reverse Proxy")
               put("status", "online")
               put("port", port)
               put("bridge_synced", BridgeSyncManager.isSynced.value)
-              put("reverse_proxy_enabled", ReverseProxyManager.isGlobalEnabled.value)
               put("timestamp", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
               put("uptime_ms", System.currentTimeMillis() - startTime)
               put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
@@ -311,7 +333,7 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 10. Echo
+          // 11. Echo
           cleanPath == "/echo" -> {
             statusCode = 200
             val json = JSONObject().apply {
@@ -325,14 +347,14 @@ class EmbeddedHttpServer(
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 11. Headers
+          // 12. Headers
           cleanPath == "/headers" -> {
             statusCode = 200
             val json = JSONObject(headers as Map<*, *>).toString(2)
             sendResponse(output, 200, "application/json", json)
           }
 
-          // 12. Root GreasyFork-Style 1-Click Install Web Hub
+          // 13. Rich Phone Remote Web Portal & Userscript Hub (Served at / or /phone or /dashboard)
           else -> {
             statusCode = 200
             val isSynced = BridgeSyncManager.isSynced.value
@@ -341,81 +363,101 @@ class EmbeddedHttpServer(
             else
               """<span style="background: #F59E0B; color: #78350F; padding: 4px 12px; border-radius: 999px; font-weight: bold; font-size: 13px;">🟡 WAITING FOR TAMPERMONKEY</span>"""
 
+            val phoneStats = if (context != null) PhoneDeviceManager.getTelemetry(context) else null
+            val batteryText = if (phoneStats != null) "${phoneStats.batteryPercent}% (${phoneStats.chargingType})" else "100%"
+            val networkText = phoneStats?.networkType ?: "Active"
+            val ipText = phoneStats?.localIpAddresses?.firstOrNull() ?: "127.0.0.1"
+            val storageText = if (phoneStats != null) "${phoneStats.storageFreeGb} GB free / ${phoneStats.storageTotalGb} GB" else "Available"
+            val ramText = if (phoneStats != null) "${phoneStats.ramFreeMb} MB free / ${phoneStats.ramTotalMb} MB" else "Available"
+            val uptimeText = phoneStats?.uptimeFormatted ?: "Running"
+
             val html = """
               <!DOCTYPE html>
               <html lang="en">
               <head>
                 <meta charset="utf-8">
-                <title>Proxy Redirect — Ngrok Agent Synced Userscript</title>
+                <title>Ngrok Phone Portal & Reverse Proxy Bridge</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
                   * { box-sizing: border-box; }
-                  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0F172A; color: #E2E8F0; margin: 0; padding: 20px; }
-                  .container { max-width: 780px; margin: 0 auto; background: #1E293B; border-radius: 16px; padding: 30px; box-shadow: 0 15px 35px rgba(0,0,0,0.5); border: 1px solid #334155; }
-                  .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; padding-bottom: 20px; margin-bottom: 20px; }
-                  h1 { margin: 0; color: #38BDF8; font-size: 24px; display: flex; align-items: center; gap: 10px; }
-                  .subtitle { color: #94A3B8; font-size: 14px; margin-top: 6px; }
-                  .install-hero { background: #0B1120; border: 2px dashed #0284C7; border-radius: 14px; padding: 24px; text-align: center; margin: 24px 0; }
-                  .install-btn { display: inline-block; background: #10B981; color: #064E3B; font-weight: 800; font-size: 18px; padding: 14px 28px; border-radius: 10px; text-decoration: none; box-shadow: 0 6px 20px rgba(16,185,129,0.4); transition: transform 0.15s ease; }
+                  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0B1120; color: #E2E8F0; margin: 0; padding: 16px; }
+                  .container { max-width: 860px; margin: 0 auto; background: #1E293B; border-radius: 18px; padding: 26px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); border: 1px solid #334155; }
+                  .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; padding-bottom: 18px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+                  h1 { margin: 0; color: #38BDF8; font-size: 22px; display: flex; align-items: center; gap: 8px; }
+                  .subtitle { color: #94A3B8; font-size: 13px; margin-top: 4px; }
+                  .hero-card { background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%); border: 2px dashed #0284C7; border-radius: 14px; padding: 20px; text-align: center; margin: 18px 0; }
+                  .install-btn { display: inline-block; background: #10B981; color: #064E3B; font-weight: 800; font-size: 16px; padding: 12px 26px; border-radius: 10px; text-decoration: none; box-shadow: 0 4px 16px rgba(16,185,129,0.3); transition: transform 0.15s ease; }
                   .install-btn:hover { transform: translateY(-2px); background: #34D399; }
-                  .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 20px 0; }
-                  .meta-card { background: #0F172A; border-radius: 10px; padding: 14px; border: 1px solid #334155; font-size: 13px; }
-                  .meta-label { color: #94A3B8; margin-bottom: 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-                  .meta-val { color: #F1F5F9; font-weight: 600; }
-                  .step-box { background: #0F172A; border-radius: 10px; padding: 16px; margin-top: 20px; }
-                  .step-title { font-weight: bold; color: #38BDF8; margin-bottom: 8px; font-size: 14px; }
-                  code { background: #1E293B; padding: 2px 6px; border-radius: 4px; color: #A7F3D0; font-family: monospace; font-size: 12px; }
-                  .endpoint-list a { color: #38BDF8; text-decoration: none; }
+                  .section-title { font-size: 14px; font-weight: bold; color: #38BDF8; text-transform: uppercase; letter-spacing: 0.8px; margin: 20px 0 10px 0; display: flex; align-items: center; gap: 6px; }
+                  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+                  .card { background: #0F172A; border-radius: 12px; padding: 14px; border: 1px solid #334155; }
+                  .card-label { color: #94A3B8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+                  .card-value { color: #F1F5F9; font-weight: bold; font-size: 14px; }
+                  .endpoint-btn { display: inline-block; background: #334155; color: #38BDF8; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-family: monospace; font-size: 12px; margin: 4px; transition: background 0.15s; }
+                  .endpoint-btn:hover { background: #475569; }
                 </style>
               </head>
               <body>
                 <div class="container">
                   <div class="header">
                     <div>
-                      <h1>⚡ Proxy Redirect (Ngrok Synced)</h1>
-                      <div class="subtitle">Hardwired Android Companion Bridge & Reverse Proxy Hub</div>
+                      <h1>📱 Ngrok Phone Gateway & Reverse Proxy Portal</h1>
+                      <div class="subtitle">Unified Access: Phone Hardware Telemetry &bull; Browser Userscript &bull; Reverse Proxy</div>
                     </div>
                     <div>$bridgeStatusBadge</div>
                   </div>
 
-                  <div class="install-hero">
-                    <p style="font-size: 16px; margin-bottom: 18px; color: #CBD5E1;">Embedded in APK bundle &bull; Direct 1-Click Installation into Lemur / Tampermonkey</p>
-                    <a href="/Proxy-Redirect.user.js" class="install-btn">⚡ 1-Click Install Userscript</a>
+                  <div class="hero-card">
+                    <div style="font-size: 15px; font-weight: bold; color: #F8FAFC; margin-bottom: 6px;">⚡ Tampermonkey Companion Userscript</div>
+                    <p style="font-size: 13px; color: #94A3B8; margin-bottom: 16px;">Hardwired bidirectional pairing with Android phone server & privacy frontends.</p>
+                    <a href="$effectiveBaseUrl/Proxy-Redirect.user.js" class="install-btn">⚡ 1-Click Install Userscript</a>
                   </div>
 
-                  <div class="meta-grid">
-                    <div class="meta-card">
-                      <div class="meta-label">Userscript Version</div>
-                      <div class="meta-val">Proxy Redirect 26.08.24 (Synced)</div>
+                  <div class="section-title">📱 Live Phone Device Telemetry</div>
+                  <div class="grid">
+                    <div class="card">
+                      <div class="card-label">Device Model</div>
+                      <div class="card-value">${Build.MANUFACTURER} ${Build.MODEL}</div>
                     </div>
-                    <div class="meta-card">
-                      <div class="meta-label">Local Host</div>
-                      <div class="meta-val">127.0.0.1:$port</div>
+                    <div class="card">
+                      <div class="card-label">Android OS</div>
+                      <div class="card-value">Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})</div>
                     </div>
-                    <div class="meta-card">
-                      <div class="meta-label">Bridge Handshake</div>
-                      <div class="meta-val">POST /api/bridge/handshake</div>
+                    <div class="card">
+                      <div class="card-label">Battery Level</div>
+                      <div class="card-value" style="color: #10B981;">$batteryText</div>
                     </div>
-                    <div class="meta-card">
-                      <div class="meta-label">Reverse Proxy Engine</div>
-                      <div class="meta-val">GET /proxy?url=...</div>
+                    <div class="card">
+                      <div class="card-label">Network Transport</div>
+                      <div class="card-value">$networkText</div>
+                    </div>
+                    <div class="card">
+                      <div class="card-label">Device IP</div>
+                      <div class="card-value" style="font-family: monospace; font-size: 12px;">$ipText</div>
+                    </div>
+                    <div class="card">
+                      <div class="card-label">Device Storage</div>
+                      <div class="card-value" style="font-size: 12px;">$storageText</div>
+                    </div>
+                    <div class="card">
+                      <div class="card-label">RAM Allocation</div>
+                      <div class="card-value" style="font-size: 12px;">$ramText</div>
+                    </div>
+                    <div class="card">
+                      <div class="card-label">System Uptime</div>
+                      <div class="card-value">$uptimeText</div>
                     </div>
                   </div>
 
-                  <div class="step-box">
-                    <div class="step-title">How 1-Click Synchronization Works:</div>
-                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">1. Make sure you have Tampermonkey installed in Lemur Browser or your browser.</p>
-                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">2. Click <strong>"1-Click Install Userscript"</strong> above &mdash; Tampermonkey will prompt you to confirm.</p>
-                    <p style="font-size: 13px; color: #94A3B8; margin: 4px 0;">3. As soon as you browse any page, the script discovers the Android app and unlocks the full Ngrok & Reverse Proxy dashboard!</p>
-                  </div>
-
-                  <h3 style="margin-top: 24px; color: #94A3B8; font-size: 14px;">Built-in Server Endpoints:</h3>
-                  <div class="endpoint-list" style="font-size: 13px; line-height: 1.8;">
-                    <div>• <a href="/Proxy-Redirect.user.js">/Proxy-Redirect.user.js</a> &mdash; Exact Userscript File</div>
-                    <div>• <a href="/api/proxy/config">/api/proxy/config</a> &mdash; Reverse Proxy Configuration JSON</div>
-                    <div>• <a href="/proxy?url=https%3A%2F%2Fexample.com">/proxy?url=...</a> &mdash; Reverse Proxy Forwarder</div>
-                    <div>• <a href="/ping">/ping</a> &mdash; Health Check</div>
-                    <div>• <a href="/status">/status</a> &mdash; Server Status & Telemetry</div>
+                  <div class="section-title">🌐 Live Gateway Endpoints</div>
+                  <div style="background: #0F172A; padding: 14px; border-radius: 12px; border: 1px solid #334155;">
+                    <a class="endpoint-btn" href="$effectiveBaseUrl/api/phone/status">/api/phone/status</a>
+                    <a class="endpoint-btn" href="$effectiveBaseUrl/api/proxy/config">/api/proxy/config</a>
+                    <a class="endpoint-btn" href="$effectiveBaseUrl/api/bridge/status">/api/bridge/status</a>
+                    <a class="endpoint-btn" href="$effectiveBaseUrl/ping">/ping</a>
+                    <a class="endpoint-btn" href="$effectiveBaseUrl/status">/status</a>
+                    <a class="endpoint-btn" href="$effectiveBaseUrl/headers">/headers</a>
+                    <a class="endpoint-btn" href="$effectiveBaseUrl/echo">/echo</a>
                   </div>
                 </div>
               </body>

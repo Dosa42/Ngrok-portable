@@ -46,7 +46,7 @@ object NgrokTunnelManager {
   private val _totalRequests = MutableStateFlow(0)
   val totalRequests: StateFlow<Int> = _totalRequests.asStateFlow()
 
-  fun ensureLocalServerRunning(port: Int) {
+  fun ensureLocalServerRunning(port: Int, context: Context? = null) {
     if (httpServer?.isRunning == true && currentServerPort == port) return
     coroutineScope.launch {
       resourceMutex.withLock {
@@ -55,6 +55,7 @@ object NgrokTunnelManager {
           httpServer?.stop()
           httpServer = EmbeddedHttpServer(
             port = port,
+            context = context,
             onRequestHandled = { entry -> recordTraffic(entry) }
           )
           httpServer?.start()

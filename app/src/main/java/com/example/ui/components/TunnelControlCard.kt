@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -69,6 +70,7 @@ import com.example.tunnel.TunnelState
 import com.example.ui.theme.StatusAmber
 import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusRed
+import com.example.util.PhoneDeviceManager
 import kotlinx.coroutines.launch
 
 @Composable
@@ -335,6 +337,36 @@ fun TunnelControlCard(
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Share", fontSize = 12.sp)
               }
+            }
+
+            // Phone Gateway & Userscript Sync Status
+            val phoneInfo = remember { PhoneDeviceManager.getTelemetry(context) }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                  text = "${phoneInfo.manufacturer} ${phoneInfo.deviceModel} • 🔋 ${phoneInfo.batteryPercent}% (${phoneInfo.chargingType})",
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onSurface
+                )
+              }
+              Text(
+                text = "⚡ Portal & Script Live",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = StatusGreen
+              )
             }
           }
         }

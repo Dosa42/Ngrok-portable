@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material.icons.filled.Tune
@@ -30,8 +32,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
@@ -59,6 +61,7 @@ import com.example.tunnel.NgrokConfig
 import com.example.tunnel.NgrokTunnelManager
 import com.example.tunnel.TunnelState
 import com.example.ui.components.BridgeSyncGateScreen
+import com.example.ui.components.ChatboxSection
 import com.example.ui.components.DebugConfigEngineSection
 import com.example.ui.components.EndpointsTesterSection
 import com.example.ui.components.ReverseProxySection
@@ -82,7 +85,7 @@ fun MainScreen() {
 
   // Start local companion server so it is ready to receive userscript handshakes
   LaunchedEffect(localPort) {
-    NgrokTunnelManager.ensureLocalServerRunning(localPort)
+    NgrokTunnelManager.ensureLocalServerRunning(localPort, context)
   }
 
   // Request notification permission for Foreground Service notification on Android 13+
@@ -216,14 +219,15 @@ fun MainScreen() {
         // Unlocked Full Dashboard
         TunnelControlCard(
           state = tunnelState,
-          modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+          modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
         )
 
-        // Navigation Tabs
-        TabRow(
+        // Navigation Tabs (5 Tabs with ScrollableTabRow)
+        ScrollableTabRow(
           selectedTabIndex = selectedTab,
           containerColor = MaterialTheme.colorScheme.surface,
           contentColor = MaterialTheme.colorScheme.primary,
+          edgePadding = 8.dp,
           indicator = { tabPositions ->
             TabRowDefaults.SecondaryIndicator(
               modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
@@ -236,12 +240,12 @@ fun MainScreen() {
             onClick = { selectedTab = 0 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Transform, contentDescription = null, modifier = Modifier.size(15.dp))
+                Icon(Icons.Default.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(15.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Reverse Proxy", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text("ChatGPT Voice", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
               }
             },
-            modifier = Modifier.testTag("tab_reverse_proxy")
+            modifier = Modifier.testTag("tab_chatbox")
           )
 
           Tab(
@@ -249,12 +253,12 @@ fun MainScreen() {
             onClick = { selectedTab = 1 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.PlayCircleOutline, contentDescription = null, modifier = Modifier.size(15.dp))
+                Icon(Icons.Default.Transform, contentDescription = null, modifier = Modifier.size(15.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Test", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text("Reverse Proxy", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
               }
             },
-            modifier = Modifier.testTag("tab_endpoints_test")
+            modifier = Modifier.testTag("tab_reverse_proxy")
           )
 
           Tab(
@@ -262,12 +266,12 @@ fun MainScreen() {
             onClick = { selectedTab = 2 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(15.dp))
+                Icon(Icons.Default.PlayCircleOutline, contentDescription = null, modifier = Modifier.size(15.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Traffic", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text("Test", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
               }
             },
-            modifier = Modifier.testTag("tab_traffic_logs")
+            modifier = Modifier.testTag("tab_endpoints_test")
           )
 
           Tab(
@@ -275,9 +279,22 @@ fun MainScreen() {
             onClick = { selectedTab = 3 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Traffic", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+              }
+            },
+            modifier = Modifier.testTag("tab_traffic_logs")
+          )
+
+          Tab(
+            selected = selectedTab == 4,
+            onClick = { selectedTab = 4 },
+            text = {
+              Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(15.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Engine", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text("Engine", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
               }
             },
             modifier = Modifier.testTag("tab_debug_config_engine")
@@ -287,10 +304,11 @@ fun MainScreen() {
         // Tab Content
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
           when (selectedTab) {
-            0 -> ReverseProxySection()
-            1 -> EndpointsTesterSection()
-            2 -> TrafficLogsSection()
-            3 -> DebugConfigEngineSection()
+            0 -> ChatboxSection()
+            1 -> ReverseProxySection()
+            2 -> EndpointsTesterSection()
+            3 -> TrafficLogsSection()
+            4 -> DebugConfigEngineSection()
           }
         }
       }

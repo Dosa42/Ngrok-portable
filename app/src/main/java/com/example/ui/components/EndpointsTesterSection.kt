@@ -96,7 +96,7 @@ fun EndpointsTesterSection(
     "http://127.0.0.1:$localPort"
   }
 
-  val quickEndpoints = listOf("/ping", "/status", "/echo", "/headers")
+  val quickEndpoints = listOf("/api/phone/status", "/api/proxy/config", "/ping", "/status", "/echo", "/headers", "/Proxy-Redirect.user.js")
 
   val curlCommand = buildString {
     append("curl -i")

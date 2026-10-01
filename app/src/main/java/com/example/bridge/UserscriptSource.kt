@@ -8,7 +8,7 @@ object UserscriptSource {
 
   val SCRIPT_CONTENT = """
 // ==UserScript==
-// @name         Proxy Redirect (Ngrok Agent Synced Bridge & Reverse Proxy GUI)
+// @name         Proxy Redirect (Ngrok Agent Synced Bridge & Phone Remote Gateway)
 // @author       Schimon Jehudah, Adv. & Ngrok Agent Reverse Proxy Engine
 // @collaborator hacker09
 // @collaborator Konf
@@ -17,7 +17,7 @@ object UserscriptSource {
 // @downloadURL  http://127.0.0.1:8085/Proxy-Redirect.user.js
 // @updateURL    http://127.0.0.1:8085/Proxy-Redirect.user.js
 // @version      26.08.24
-// @description  Redirect to privacy respecting proxy frontends & fully synchronized with Ngrok Agent Android App Reverse Proxy Engine with in-browser HUD GUI.
+// @description  Redirect to privacy respecting proxy frontends & fully synchronized with Ngrok Agent Android App, Phone Telemetry & Reverse Proxy Engine.
 // @match        *://*/*
 // @exclude      *://127.0.0.1:*/*
 // @exclude      *://localhost:*/*
@@ -39,10 +39,11 @@ object UserscriptSource {
   'use strict';
 
   const NGROK_LOCAL_PORTS = [8085, 8083, 8080, 3000, 5000, 8000];
-  let activeBridgePort = 8085;
+  let activeBridgeHost = 'http://127.0.0.1:8085';
   let isBridgeSynced = false;
   let sessionId = null;
   let syncedProxyConfig = null;
+  let phoneTelemetry = null;
 
   // Default Fallback Proxy Services
   let proxyServices = {
@@ -117,15 +118,16 @@ object UserscriptSource {
     }
   }
 
-  // 1. Handshake with Android App & Fetch Synced Proxy Config
+  // 1. Handshake with Android App / Phone Gateway
   function initBridgeHandshake() {
     let portIndex = 0;
 
     function tryPort(port) {
+      const targetBase = `http://127.0.0.1:${'$'}{port}`;
       const startMs = Date.now();
       makeRequest({
         method: 'POST',
-        url: `http://127.0.0.1:${'$'}{port}/api/bridge/handshake`,
+        url: `${'$'}{targetBase}/api/bridge/handshake`,
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({
           script_version: '26.08.24',
@@ -139,12 +141,13 @@ object UserscriptSource {
             const data = JSON.parse(response.responseText);
             if (data.status === 'synchronized') {
               isBridgeSynced = true;
-              activeBridgePort = port;
+              activeBridgeHost = targetBase;
               sessionId = data.session_id;
+              phoneTelemetry = data.phone_telemetry || null;
               if (data.proxy_config) {
                 applySyncedProxyConfig(data.proxy_config);
               }
-              console.log(`[Proxy Redirect] Synced with Android Ngrok Agent on port ${'$'}{port}`);
+              console.log(`[Proxy Redirect] Synced with Android Ngrok Agent on ${'$'}{targetBase}`);
               renderInBrowserHud(Date.now() - startMs);
               startHeartbeatLoop();
             }
@@ -162,7 +165,6 @@ object UserscriptSource {
       if (portIndex < NGROK_LOCAL_PORTS.length) {
         tryPort(NGROK_LOCAL_PORTS[portIndex]);
       } else {
-        // Standalone mode: Render standalone HUD
         renderInBrowserHud(null);
       }
     }
@@ -188,7 +190,7 @@ object UserscriptSource {
       if (!isBridgeSynced) return;
       makeRequest({
         method: 'POST',
-        url: `http://127.0.0.1:${'$'}{activeBridgePort}/api/bridge/heartbeat`,
+        url: `${'$'}{activeBridgeHost}/api/bridge/heartbeat`,
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({
           session_id: sessionId,
@@ -213,7 +215,6 @@ object UserscriptSource {
         if (window.location.origin === targetInstance) return;
 
         let targetUrl = `${'$'}{targetInstance}${'$'}{currentPath}${'$'}{window.location.search}${'$'}{window.location.hash}`;
-        // Strip tracking params
         targetUrl = stripTracking(targetUrl);
 
         console.info(`[Proxy Redirect] Forwarding ${'$'}{currentHost} to ${'$'}{targetUrl}`);
@@ -234,9 +235,10 @@ object UserscriptSource {
     }
   }
 
-  // 3. In-Browser Floating Reverse Proxy HUD GUI
+  // 3. In-Browser Floating Reverse Proxy & Phone Gateway HUD
   function renderInBrowserHud(latencyMs) {
-    if (document.getElementById('ngrok-proxy-hud')) return;
+    const existingHud = document.getElementById('ngrok-proxy-hud');
+    if (existingHud) existingHud.remove();
 
     const host = window.location.hostname;
     let matchingServiceKey = null;
@@ -257,7 +259,7 @@ object UserscriptSource {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 12px;
       color: #E2E8F0;
-      background: #0F172A;
+      background: #0B1120;
       border: 1px solid ${'$'}{isBridgeSynced ? '#10B981' : '#F59E0B'};
       border-radius: 12px;
       padding: 10px 14px;
@@ -265,13 +267,23 @@ object UserscriptSource {
       display: flex;
       flex-direction: column;
       gap: 6px;
-      max-width: 320px;
+      max-width: 330px;
       transition: all 0.2s ease;
     `;
 
     const statusBadge = isBridgeSynced
-      ? `<span style="color: #10B981; font-weight: bold;">🟢 Synced (${'$'}{latencyMs || 12}ms)</span>`
+      ? `<span style="color: #10B981; font-weight: bold;">🟢 Synced (${'$'}{latencyMs || 10}ms)</span>`
       : `<span style="color: #F59E0B; font-weight: bold;">🟡 Standalone</span>`;
+
+    let phoneInfoHtml = '';
+    if (phoneTelemetry) {
+      const bat = phoneTelemetry.battery ? `${'$'}{phoneTelemetry.battery.percent}%` : '100%';
+      phoneInfoHtml = `
+        <div style="font-size:10px; color:#94A3B8; background:#1E293B; border-radius:6px; padding:3px 6px;">
+          📱 ${'$'}{phoneTelemetry.manufacturer || 'Android'} ${'$'}{phoneTelemetry.device_model || 'Device'} &bull; 🔋 ${'$'}{bat}
+        </div>
+      `;
+    }
 
     let actionBtnHtml = '';
     if (matchingServiceKey) {
@@ -288,17 +300,18 @@ object UserscriptSource {
 
     hud.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-weight:bold; color:#38BDF8;">⚡ Reverse Proxy Bridge</span>
+        <span style="font-weight:bold; color:#38BDF8;">⚡ Phone Gateway & Proxy</span>
         <button id="ngrok-hud-close" style="background:none; border:none; color:#94A3B8; cursor:pointer; font-size:14px;">✕</button>
       </div>
       <div style="font-size:11px;">Status: ${'$'}{statusBadge}</div>
+      ${'$'}{phoneInfoHtml}
       ${'$'}{actionBtnHtml}
       <div style="display:flex; gap:6px; margin-top:4px;">
         <button id="ngrok-hud-proxy-route" style="flex:1; background:#334155; color:#F8FAFC; border:none; border-radius:6px; padding:4px; font-size:10px; cursor:pointer;">
           Route via Ngrok
         </button>
         <button id="ngrok-hud-open-app" style="flex:1; background:#065F46; color:#A7F3D0; border:none; border-radius:6px; padding:4px; font-size:10px; cursor:pointer; font-weight:bold;">
-          Open App GUI
+          Phone Portal
         </button>
       </div>
     `;
@@ -323,14 +336,14 @@ object UserscriptSource {
       if (proxyRouteBtn) {
         proxyRouteBtn.onclick = () => {
           const encoded = encodeURIComponent(window.location.href);
-          window.location.href = `http://127.0.0.1:${'$'}{activeBridgePort}/proxy?url=${'$'}{encoded}`;
+          window.location.href = `${'$'}{activeBridgeHost}/proxy?url=${'$'}{encoded}`;
         };
       }
 
       const openAppBtn = document.getElementById('ngrok-hud-open-app');
       if (openAppBtn) {
         openAppBtn.onclick = () => {
-          window.open(`http://127.0.0.1:${'$'}{activeBridgePort}/`, '_blank');
+          window.open(`${'$'}{activeBridgeHost}/`, '_blank');
         };
       }
     }
@@ -344,8 +357,8 @@ object UserscriptSource {
 
   // Register Greasemonkey Menu Commands
   if (typeof GM_registerMenuCommand !== 'undefined') {
-    GM_registerMenuCommand("⚡ Open Android Reverse Proxy Dashboard", () => {
-      window.open(`http://127.0.0.1:${'$'}{activeBridgePort}/`, '_blank');
+    GM_registerMenuCommand("📱 Open Phone Remote Portal", () => {
+      window.open(`${'$'}{activeBridgeHost}/`, '_blank');
     });
     GM_registerMenuCommand("🔄 Re-sync with Android Ngrok Agent", () => {
       initBridgeHandshake();
