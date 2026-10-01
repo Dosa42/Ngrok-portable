@@ -3,10 +3,13 @@ package com.example.chat
 import android.content.Context
 import android.util.Log
 import com.example.voice.GroqWhisperSstManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
@@ -45,39 +48,17 @@ object ChatManager {
   private const val PREFS_NAME = "chat_prefs"
   private const val KEY_SELECTED_MODEL = "selected_model"
   private const val KEY_SYSTEM_PROMPT = "system_prompt"
-  private const val KEY_TEMPERATURE = "temperature"
   private const val KEY_REASONING_EFFORT = "reasoning_effort"
   private const val KEY_CUSTOM_BASE_URL = "custom_base_url"
-  private const val KEY_DYNAMIC_MODELS_JSON = "dynamic_models_json"
 
   const val OPENAI_BASE_URL = "https://api.openai.com/v1"
   const val GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-
-  // 2026 Latest Model Catalog
-  val DEFAULT_MODELS = listOf(
-    "gpt-6-astra" to "GPT-6 Astra (Flagship Coding & Reasoning)",
-    "gpt-6-sol" to "GPT-6 Sol (High-Throughput General)",
-    "gpt-6-luna" to "GPT-6 Luna (Ultra-Low Latency Conversational)",
-    "gpt-5.5" to "GPT-5.5 (Multimodal Frontier Synthesis)",
-    "gpt-5.5-instant" to "GPT-5.5 Instant (Sub-Second Response)",
-    "gpt-5.4" to "GPT-5.4 (High-Precision Agentic)",
-    "gpt-5.4-mini" to "GPT-5.4 Mini (400K Context Reasoning)",
-    "gpt-5.2" to "GPT-5.2 (Science & Code Generation)",
-    "o3-mini" to "o3 Mini (STEM & Math Logic)",
-    "o1" to "o1 (Deep Deliberative Reasoning)",
-    "o1-mini" to "o1 Mini (Fast Code Reasoning)",
-    "gpt-4o" to "GPT-4o (Omni Multimodal)",
-    "gpt-4o-mini" to "GPT-4o Mini (Efficient & Fast)",
-    "openai/gpt-oss-120b" to "GPT-OSS 120B (Open-Weight MoE)",
-    "openai/gpt-oss-20b" to "GPT-OSS 20B (Compact LPU Reasoning)"
-  )
 
   private val _messages = MutableStateFlow<List<ChatMessage>>(
     listOf(
       ChatMessage(
         role = "assistant",
-        content = "Hello! Connected via ChatGPT OAuth 2.0 PKCE & Groq Whisper v3 SST / English TTS. Configured with 2026 latest models (GPT-6 Astra series). How can I assist you?",
-        modelUsed = "gpt-6-astra"
+        content = "Hello! Choose a model from the live backend catalog to start chatting."
       )
     )
   )
@@ -86,20 +67,22 @@ object ChatManager {
   private val _isGenerating = MutableStateFlow(false)
   val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
 
-  private val _selectedModel = MutableStateFlow("gpt-6-astra")
+  private val _selectedModel = MutableStateFlow("")
   val selectedModel: StateFlow<String> = _selectedModel.asStateFlow()
 
-  private val _availableModels = MutableStateFlow<List<Pair<String, String>>>(DEFAULT_MODELS)
+  private val _availableModels = MutableStateFlow<List<Pair<String, String>>>(emptyList())
   val availableModels: StateFlow<List<Pair<String, String>>> = _availableModels.asStateFlow()
 
   private val _isFetchingModels = MutableStateFlow(false)
   val isFetchingModels: StateFlow<Boolean> = _isFetchingModels.asStateFlow()
 
+  private val _modelCatalogError = MutableStateFlow<String?>(null)
+  val modelCatalogError: StateFlow<String?> = _modelCatalogError.asStateFlow()
+  private val modelFetchMutex = Mutex()
+  @Volatile private var modelCatalogSource: Pair<String, String>? = null
+
   private val _systemPrompt = MutableStateFlow("You are an expert AI software architect and companion. Answer questions accurately and concisely in English.")
   val systemPrompt: StateFlow<String> = _systemPrompt.asStateFlow()
-
-  private val _temperature = MutableStateFlow(0.7f)
-  val temperature: StateFlow<Float> = _temperature.asStateFlow()
 
   private val _reasoningEffort = MutableStateFlow("medium") // "low", "medium", "high"
   val reasoningEffort: StateFlow<String> = _reasoningEffort.asStateFlow()
@@ -120,26 +103,14 @@ object ChatManager {
 
   fun init(context: Context) {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    _selectedModel.value = prefs.getString(KEY_SELECTED_MODEL, "gpt-6-astra") ?: "gpt-6-astra"
+    _selectedModel.value = prefs.getString(KEY_SELECTED_MODEL, "") ?: ""
     _systemPrompt.value = prefs.getString(KEY_SYSTEM_PROMPT, _systemPrompt.value) ?: _systemPrompt.value
-    _temperature.value = prefs.getFloat(KEY_TEMPERATURE, 0.7f)
     _reasoningEffort.value = prefs.getString(KEY_REASONING_EFFORT, "medium") ?: "medium"
     _customBaseUrl.value = prefs.getString(KEY_CUSTOM_BASE_URL, OPENAI_BASE_URL) ?: OPENAI_BASE_URL
 
-    val savedModelsJson = prefs.getString(KEY_DYNAMIC_MODELS_JSON, null)
-    if (!savedModelsJson.isNullOrBlank()) {
-      try {
-        val arr = JSONArray(savedModelsJson)
-        val list = mutableListOf<Pair<String, String>>()
-        for (i in 0 until arr.length()) {
-          val obj = arr.getJSONObject(i)
-          list.add(obj.getString("id") to obj.getString("label"))
-        }
-        if (list.isNotEmpty()) {
-          _availableModels.value = list
-        }
-      } catch (_: Exception) {}
-    }
+    // Discard legacy settings, including cached models merged with the old fixed catalog.
+    prefs.edit().remove("dynamic_models_json").remove("temperature").apply()
+    invalidateModelCatalog()
   }
 
   fun setModel(context: Context, model: String) {
@@ -158,14 +129,6 @@ object ChatManager {
       .apply()
   }
 
-  fun setTemperature(context: Context, temp: Float) {
-    _temperature.value = temp
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-      .edit()
-      .putFloat(KEY_TEMPERATURE, temp)
-      .apply()
-  }
-
   fun setReasoningEffort(context: Context, effort: String) {
     _reasoningEffort.value = effort
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -176,6 +139,7 @@ object ChatManager {
 
   fun setCustomBaseUrl(context: Context, url: String) {
     val cleanUrl = url.trim().replace(Regex("/+$"), "")
+    if (cleanUrl != _customBaseUrl.value) invalidateModelCatalog()
     _customBaseUrl.value = cleanUrl
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
       .edit()
@@ -202,81 +166,72 @@ object ChatManager {
     Log.i(TAG, "Hot-loaded AI and backend configurations")
   }
 
+  fun invalidateModelCatalog() {
+    modelCatalogSource = null
+    _availableModels.value = emptyList()
+    _modelCatalogError.value = null
+  }
+
+  private fun parseModelCatalog(json: JSONObject): List<Pair<String, String>> {
+    val chatgptModels = json.optJSONArray("models")
+    val models = chatgptModels ?: json.optJSONArray("data")
+      ?: throw IllegalArgumentException("No model catalog returned in response")
+    val idKey = if (chatgptModels != null) "slug" else "id"
+    val result = mutableListOf<Pair<String, String>>()
+    for (i in 0 until models.length()) {
+      val model = models.getJSONObject(i)
+      if (chatgptModels != null && model.optString("visibility") != "list") continue
+      val id = model.optString(idKey)
+      if (id.isNotBlank()) {
+        result.add(id to model.optString("display_name").ifBlank { id })
+      }
+    }
+    return result.distinctBy { it.first }
+  }
+
   /**
-   * Dynamically fetch live available models from the backend /v1/models endpoint
+   * Fetch the current backend catalog without cached or hardcoded fallback models.
    */
-  suspend fun fetchLiveModelsFromApi(context: Context): Result<Int> {
+  suspend fun fetchLiveModelsFromApi(context: Context): Result<Int> = modelFetchMutex.withLock {
     _isFetchingModels.value = true
-    return withContext(Dispatchers.IO) {
-      try {
-        val token = ChatgptOAuthPkceManager.getEffectiveToken(context)
-        val baseUrl = _customBaseUrl.value
+    invalidateModelCatalog()
+    try {
+      val token = ChatgptOAuthPkceManager.getEffectiveToken(context)
+      val baseUrl = _customBaseUrl.value
+      val liveModels = withContext(Dispatchers.IO) {
         val requestBuilder = Request.Builder()
           .url("$baseUrl/models")
+          .header("Cache-Control", "no-cache")
           .get()
 
         if (token.isNotBlank()) {
           requestBuilder.header("Authorization", "Bearer $token")
         }
 
-        val response = httpClient.newCall(requestBuilder.build()).execute()
-        val bodyText = response.body?.string() ?: ""
-
-        if (!response.isSuccessful) {
-          _isFetchingModels.value = false
-          return@withContext Result.failure(Exception("HTTP ${response.code}: $bodyText"))
-        }
-
-        val json = JSONObject(bodyText)
-        val dataArr = json.optJSONArray("data") ?: JSONArray()
-        val dynamicList = mutableListOf<Pair<String, String>>()
-
-        for (i in 0 until dataArr.length()) {
-          val m = dataArr.getJSONObject(i)
-          val id = m.optString("id")
-          if (id.isNotBlank()) {
-            val label = when {
-              id.startsWith("gpt-6") -> "$id (GPT-6 Series)"
-              id.startsWith("gpt-5") -> "$id (GPT-5 Series)"
-              id.startsWith("o3") -> "$id (Reasoning)"
-              id.startsWith("o1") -> "$id (Reasoning)"
-              id.startsWith("gpt-4o") -> "$id (Omni)"
-              id.contains("whisper") -> "$id (Audio SST)"
-              id.contains("oss") -> "$id (Open-Weight)"
-              else -> id
-            }
-            dynamicList.add(id to label)
+        httpClient.newCall(requestBuilder.build()).execute().use { response ->
+          val bodyText = response.body?.string() ?: ""
+          if (!response.isSuccessful) {
+            throw IllegalStateException("HTTP ${response.code}: $bodyText")
           }
+          parseModelCatalog(JSONObject(bodyText))
         }
-
-        if (dynamicList.isNotEmpty()) {
-          // Merge with default flagships ensuring gpt-6-astra is always accessible
-          val merged = (DEFAULT_MODELS + dynamicList).distinctBy { it.first }
-          _availableModels.value = merged
-
-          val saveArr = JSONArray()
-          merged.forEach {
-            saveArr.put(JSONObject().apply {
-              put("id", it.first)
-              put("label", it.second)
-            })
-          }
-          context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_DYNAMIC_MODELS_JSON, saveArr.toString())
-            .apply()
-
-          _isFetchingModels.value = false
-          Result.success(merged.size)
-        } else {
-          _isFetchingModels.value = false
-          Result.failure(Exception("No models returned in response"))
-        }
-      } catch (e: Exception) {
-        _isFetchingModels.value = false
-        Log.e(TAG, "Error fetching models: ${e.message}", e)
-        Result.failure(e)
       }
+      if (baseUrl != _customBaseUrl.value || token != ChatgptOAuthPkceManager.getEffectiveToken(context)) {
+        throw IllegalStateException("Backend or account changed; refresh the model catalog")
+      }
+      modelCatalogSource = baseUrl to token
+      if (liveModels.none { it.first == _selectedModel.value }) setModel(context, "")
+      _availableModels.value = liveModels
+      if (liveModels.isEmpty()) throw IllegalStateException("No models returned in response")
+      Result.success(liveModels.size)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      _modelCatalogError.value = e.message ?: "Model discovery failed"
+      Log.e(TAG, "Error fetching models: ${e.message}", e)
+      Result.failure(e)
+    } finally {
+      _isFetchingModels.value = false
     }
   }
 
@@ -288,6 +243,7 @@ object ChatManager {
     return withContext(Dispatchers.IO) {
       val token = ChatgptOAuthPkceManager.getEffectiveToken(context)
       val baseUrl = _customBaseUrl.value
+      val activeModel = _selectedModel.value
 
       var isAuthValid = token.isNotBlank()
       var authStatusMsg = if (isAuthValid) "Token configured" else "No token provided"
@@ -303,6 +259,7 @@ object ChatManager {
         val startM = System.currentTimeMillis()
         val req = Request.Builder()
           .url("$baseUrl/models")
+          .header("Cache-Control", "no-cache")
           .header("Authorization", "Bearer $token")
           .get()
           .build()
@@ -310,7 +267,7 @@ object ChatManager {
         modelsLatency = System.currentTimeMillis() - startM
         if (res.isSuccessful) {
           val json = JSONObject(res.body?.string() ?: "{}")
-          modelsCount = json.optJSONArray("data")?.length() ?: 0
+          modelsCount = parseModelCatalog(json).size
           authStatusMsg = "Active & Verified"
         } else {
           authStatusMsg = "API Auth Failed (${res.code})"
@@ -321,11 +278,11 @@ object ChatManager {
       }
 
       // 2. Mini Completion Ping Test
-      if (isAuthValid) {
+      if (isAuthValid && activeModel.isNotBlank()) {
         try {
           val startC = System.currentTimeMillis()
           val payload = JSONObject().apply {
-            put("model", if (_selectedModel.value.startsWith("gpt-6")) "gpt-4o-mini" else _selectedModel.value)
+            put("model", activeModel)
             put("messages", JSONArray().apply {
               put(JSONObject().apply {
                 put("role", "user")
@@ -400,12 +357,21 @@ object ChatManager {
       return null
     }
 
+    val activeModel = _selectedModel.value
+    val baseUrl = _customBaseUrl.value
+    if (activeModel.isBlank() || _availableModels.value.none { it.first == activeModel } ||
+      modelCatalogSource != (baseUrl to token)) {
+      _messages.value = _messages.value + listOf(
+        ChatMessage(role = "user", content = userText),
+        ChatMessage(role = "assistant", content = "Fetch the current backend catalog and choose an available model first.", isError = true)
+      )
+      return null
+    }
+
     val userMessage = ChatMessage(role = "user", content = userText)
     _messages.value = _messages.value + userMessage
     _isGenerating.value = true
 
-    val activeModel = _selectedModel.value
-    val baseUrl = _customBaseUrl.value
     val effort = _reasoningEffort.value
 
     return withContext(Dispatchers.IO) {
@@ -433,14 +399,8 @@ object ChatManager {
 
         // 3. Construct OpenAI Chat Completion Payload
         val payload = JSONObject().apply {
-          val modelToSend = if (activeModel.startsWith("gpt-6")) "gpt-4o" else activeModel
-          put("model", modelToSend)
+          put("model", activeModel)
           put("messages", messagesJsonArray)
-
-          // Only include temperature for non-o1/o3 reasoning models if restricted
-          if (!activeModel.startsWith("o1") && !activeModel.startsWith("o3")) {
-            put("temperature", _temperature.value.toDouble())
-          }
 
           // Reasoning Effort Configuration
           if (activeModel.startsWith("o1") || activeModel.startsWith("o3") || activeModel.startsWith("gpt-5.4") || activeModel.startsWith("gpt-6")) {
@@ -488,7 +448,7 @@ object ChatManager {
         val assistantMsg = ChatMessage(
           role = "assistant",
           content = assistantReply.trim(),
-          modelUsed = activeModel
+          modelUsed = jsonResp.optString("model").ifBlank { activeModel }
         )
 
         _messages.value = _messages.value + assistantMsg

@@ -78,7 +78,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -87,7 +86,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -125,11 +123,13 @@ fun ChatboxSection(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val listState = rememberLazyListState()
+  var isInitialized by remember { mutableStateOf(false) }
 
   LaunchedEffect(Unit) {
     ChatManager.init(context)
     ChatgptOAuthPkceManager.init(context)
     GroqEnglishTtsManager.init(context)
+    isInitialized = true
   }
 
   DisposableEffect(Unit) {
@@ -143,6 +143,9 @@ fun ChatboxSection(
   val isGenerating by ChatManager.isGenerating.collectAsState()
   val selectedModel by ChatManager.selectedModel.collectAsState()
   val availableModels by ChatManager.availableModels.collectAsState()
+  val isFetchingModels by ChatManager.isFetchingModels.collectAsState()
+  val modelCatalogError by ChatManager.modelCatalogError.collectAsState()
+  val customBaseUrl by ChatManager.customBaseUrl.collectAsState()
   val reasoningEffort by ChatManager.reasoningEffort.collectAsState()
   val isOAuthAuth by ChatgptOAuthPkceManager.isAuthenticated.collectAsState()
   val authStatus by ChatgptOAuthPkceManager.authStatus.collectAsState()
@@ -156,6 +159,15 @@ fun ChatboxSection(
   var inputText by remember { mutableStateOf("") }
   var showModelDropdown by remember { mutableStateOf(false) }
   var showSettingsDialog by remember { mutableStateOf(false) }
+
+  val selectedModelLabel = availableModels.firstOrNull { it.first == selectedModel }?.second
+  val canSend = inputText.isNotBlank() && !isGenerating && !isFetchingModels && selectedModelLabel != null
+
+  LaunchedEffect(isInitialized, isOAuthAuth, authStatus, customBaseUrl, showSettingsDialog) {
+    if (isInitialized && !showSettingsDialog) {
+      ChatManager.fetchLiveModelsFromApi(context)
+    }
+  }
 
   // Audio permission launcher for Whisper v3 SST
   val audioPermissionLauncher = rememberLauncherForActivityResult(
@@ -207,14 +219,18 @@ fun ChatboxSection(
           // Model Dropdown
           Box {
             OutlinedButton(
-              onClick = { showModelDropdown = true },
+              onClick = {
+                ChatManager.invalidateModelCatalog()
+                showModelDropdown = true
+                scope.launch { ChatManager.fetchLiveModelsFromApi(context) }
+              },
               shape = RoundedCornerShape(8.dp),
               modifier = Modifier.height(36.dp).testTag("model_selector_button")
             ) {
               Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
               Spacer(modifier = Modifier.width(6.dp))
               Text(
-                text = selectedModel,
+                text = if (isFetchingModels) "Fetching models..." else selectedModelLabel ?: "Choose a model",
                 fontWeight = FontWeight.Bold,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace
@@ -226,6 +242,13 @@ fun ChatboxSection(
               expanded = showModelDropdown,
               onDismissRequest = { showModelDropdown = false }
             ) {
+              if (isFetchingModels || availableModels.isEmpty()) {
+                DropdownMenuItem(
+                  text = { Text(if (isFetchingModels) "Fetching models..." else modelCatalogError ?: "No models available", fontSize = 12.sp) },
+                  onClick = {},
+                  enabled = false
+                )
+              }
               availableModels.forEach { (modelId, label) ->
                 DropdownMenuItem(
                   text = {
@@ -445,7 +468,7 @@ fun ChatboxSection(
         OutlinedTextField(
           value = inputText,
           onValueChange = { inputText = it },
-          placeholder = { Text("Ask $selectedModel or tap mic for English SST...", fontSize = 12.sp) },
+          placeholder = { Text(if (selectedModelLabel != null) "Ask $selectedModelLabel or tap mic for English SST..." else "Choose a model to start chatting...", fontSize = 12.sp) },
           modifier = Modifier
             .weight(1f)
             .testTag("chat_message_input"),
@@ -466,17 +489,17 @@ fun ChatboxSection(
               }
             }
           },
-          enabled = inputText.isNotBlank() && !isGenerating,
+          enabled = canSend,
           modifier = Modifier
             .size(44.dp)
             .clip(CircleShape)
-            .background(if (inputText.isNotBlank() && !isGenerating) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+            .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
             .testTag("chat_send_button")
         ) {
           Icon(
             imageVector = Icons.Default.Send,
             contentDescription = "Send",
-            tint = if (inputText.isNotBlank() && !isGenerating) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = if (canSend) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(18.dp)
           )
         }
@@ -505,7 +528,6 @@ fun ComprehensiveAiBackendSettingsDialog(
   var authCodeInput by remember { mutableStateOf("") }
   var customBaseUrlInput by remember { mutableStateOf(ChatManager.customBaseUrl.value) }
   var reasoningEffortState by remember { mutableStateOf(ChatManager.reasoningEffort.value) }
-  var temperatureState by remember { mutableFloatStateOf(ChatManager.temperature.value) }
   var groqApiKeyInput by remember { mutableStateOf(GroqWhisperSstManager.getGroqApiKey(context)) }
   var whisperModelInput by remember { mutableStateOf(GroqWhisperSstManager.getWhisperModel(context)) }
   var systemPromptInput by remember { mutableStateOf(ChatManager.systemPrompt.value) }
@@ -740,6 +762,7 @@ fun ComprehensiveAiBackendSettingsDialog(
             onValueChange = {
               apiKeyInput = it
               ChatgptOAuthPkceManager.setDirectApiKey(context, it)
+              ChatManager.invalidateModelCatalog()
             },
             label = { Text("Bearer API Key (sk-...)") },
             modifier = Modifier.fillMaxWidth(),
@@ -784,25 +807,6 @@ fun ComprehensiveAiBackendSettingsDialog(
             }
           }
 
-          Spacer(modifier = Modifier.height(10.dp))
-
-          // Temperature Slider
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Text("Temperature: ${String.format(java.util.Locale.US, "%.2f", temperatureState)}", fontSize = 11.sp, fontWeight = FontWeight.Medium)
-          }
-          Slider(
-            value = temperatureState,
-            onValueChange = {
-              temperatureState = it
-              ChatManager.setTemperature(context, it)
-            },
-            valueRange = 0.0f..1.5f,
-            steps = 14
-          )
         }
 
         item { HorizontalDivider() }
