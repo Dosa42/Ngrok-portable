@@ -472,6 +472,37 @@ fun TunnelControlCard(
               color = if (pingResult?.contains("200") == true) StatusGreen else StatusRed
             )
           }
+
+          Spacer(modifier = Modifier.height(10.dp))
+
+          // Auto-start on boot toggle
+          var autoStartBoot by remember { mutableStateOf(NgrokConfig.isAutoStartOnBoot(context)) }
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Auto-start tunnel on device boot",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+              )
+              Text(
+                text = "Requires RECEIVE_BOOT_COMPLETED & configured authtoken",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+            androidx.compose.material3.Switch(
+              checked = autoStartBoot,
+              onCheckedChange = {
+                autoStartBoot = it
+                NgrokConfig.setAutoStartOnBoot(context, it)
+              }
+            )
+          }
         }
       }
     }

@@ -1,5 +1,10 @@
 package com.example.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -36,10 +42,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.tunnel.NgrokTunnelManager
 import com.example.tunnel.TunnelState
 import com.example.ui.components.EndpointsTesterSection
@@ -52,8 +60,26 @@ import com.example.ui.theme.StatusRed
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
+  val context = LocalContext.current
   val tunnelState by NgrokTunnelManager.state.collectAsState()
   var selectedTab by remember { mutableIntStateOf(0) }
+
+  // Request notification permission for Foreground Service notification on Android 13+
+  val notificationPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { /* Handled gracefully */ }
+
+  LaunchedEffect(Unit) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      if (ContextCompat.checkSelfPermission(
+          context,
+          Manifest.permission.POST_NOTIFICATIONS
+        ) != PackageManager.PERMISSION_GRANTED
+      ) {
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+      }
+    }
+  }
 
   val statusDotColor = when (tunnelState) {
     is TunnelState.Connected -> StatusGreen

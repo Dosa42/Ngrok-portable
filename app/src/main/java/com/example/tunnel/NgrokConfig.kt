@@ -8,6 +8,7 @@ object NgrokConfig {
   private const val PREFS_NAME = "ngrok_prefs"
   private const val KEY_AUTH_TOKEN = "key_auth_token"
   private const val KEY_PORT = "key_local_port"
+  private const val KEY_AUTO_START_ON_BOOT = "key_auto_start_on_boot"
 
   private fun getPrefs(context: Context): SharedPreferences {
     return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -27,6 +28,14 @@ object NgrokConfig {
 
   fun setLocalPort(context: Context, port: Int) {
     getPrefs(context).edit().putInt(KEY_PORT, port).apply()
+  }
+
+  fun isAutoStartOnBoot(context: Context): Boolean {
+    return getPrefs(context).getBoolean(KEY_AUTO_START_ON_BOOT, false)
+  }
+
+  fun setAutoStartOnBoot(context: Context, autoStart: Boolean) {
+    getPrefs(context).edit().putBoolean(KEY_AUTO_START_ON_BOOT, autoStart).apply()
   }
 
   fun resetToDefaults(context: Context) {
