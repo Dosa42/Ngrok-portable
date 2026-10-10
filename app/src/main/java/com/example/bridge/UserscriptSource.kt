@@ -17,7 +17,7 @@ object UserscriptSource {
 // @downloadURL  http://127.0.0.1:8085/Proxy-Redirect.user.js
 // @updateURL    http://127.0.0.1:8085/Proxy-Redirect.user.js
 // @version      26.08.24
-// @description  Redirect to privacy respecting proxy frontends & fully synchronized with Ngrok Agent Android App, Phone Telemetry & Reverse Proxy Engine.
+// @description  Redirect to privacy respecting proxy frontends & fully synchronized with Ngrok Agent Android App, Phone Telemetry, Native Local WebSocket (Zero CORS) & Reverse Proxy Engine.
 // @match        *://*/*
 // @exclude      *://127.0.0.1:*/*
 // @exclude      *://localhost:*/*
@@ -39,8 +39,11 @@ object UserscriptSource {
   'use strict';
 
   const NGROK_LOCAL_PORTS = [8085, 8083, 8080, 3000, 5000, 8000];
+  const WS_LOCAL_PORTS = [8086, 8085, 8087, 8088];
   let activeBridgeHost = 'http://127.0.0.1:8085';
   let isBridgeSynced = false;
+  let isWebSocketConnected = false;
+  let wsClient = null;
   let sessionId = null;
   let syncedProxyConfig = null;
   let phoneTelemetry = null;
@@ -118,7 +121,75 @@ object UserscriptSource {
     }
   }
 
-  // 1. Handshake with Android App / Phone Gateway
+  // 1. Native Local WebSocket Connection (Zero CORS Blockers)
+  function initWebSocketConnection() {
+    let wsPortIdx = 0;
+
+    function tryWsPort(port) {
+      try {
+        const wsUrl = `ws://127.0.0.1:${'$'}{port}/ws`;
+        console.log(`[Proxy Redirect] Attempting native local WebSocket: ${'$'}{wsUrl}`);
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = function () {
+          console.log(`[Proxy Redirect] ✅ Native Local WebSocket Connected on port ${'$'}{port} (No CORS)`);
+          isWebSocketConnected = true;
+          isBridgeSynced = true;
+          wsClient = ws;
+
+          // Send immediate handshake over WebSocket
+          ws.send(JSON.stringify({
+            action: 'bridge_handshake',
+            version: '26.08.24',
+            browser: navigator.userAgent.includes('Lemur') ? 'Lemur Browser' : 'Tampermonkey Browser',
+            url: window.location.href,
+            title: document.title || 'Web Page'
+          }));
+
+          // Request telemetry
+          ws.send(JSON.stringify({ action: 'get_phone_status' }));
+          ws.send(JSON.stringify({ action: 'get_proxy_rules' }));
+          renderInBrowserHud(5);
+        };
+
+        ws.onmessage = function (event) {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'PHONE_STATUS' && data.data) {
+              phoneTelemetry = data.data;
+              renderInBrowserHud(2);
+            } else if (data.type === 'PROXY_CONFIG' && data.config) {
+              applySyncedProxyConfig(data.config);
+            } else if (data.type === 'WEBSOCKET_CONNECTED') {
+              sessionId = data.sessionId;
+            }
+          } catch (e) {
+            console.warn('[Proxy Redirect] WS frame parse error:', e);
+          }
+        };
+
+        ws.onerror = function () {
+          wsPortIdx++;
+          if (wsPortIdx < WS_LOCAL_PORTS.length) {
+            tryWsPort(WS_LOCAL_PORTS[wsPortIdx]);
+          } else {
+            // Fallback to HTTP polling if WebSocket is not active
+            initBridgeHandshake();
+          }
+        };
+
+        ws.onclose = function () {
+          isWebSocketConnected = false;
+        };
+      } catch (e) {
+        initBridgeHandshake();
+      }
+    }
+
+    tryWsPort(WS_LOCAL_PORTS[0]);
+  }
+
+  // 2. HTTP Companion Fallback Handshake
   function initBridgeHandshake() {
     let portIndex = 0;
 
@@ -187,7 +258,7 @@ object UserscriptSource {
 
   function startHeartbeatLoop() {
     setInterval(() => {
-      if (!isBridgeSynced) return;
+      if (!isBridgeSynced || isWebSocketConnected) return;
       makeRequest({
         method: 'POST',
         url: `${'$'}{activeBridgeHost}/api/bridge/heartbeat`,
@@ -201,7 +272,7 @@ object UserscriptSource {
     }, 5000);
   }
 
-  // 2. Perform Intelligent Privacy Redirection
+  // 3. Perform Intelligent Privacy Redirection
   function checkAndPerformRedirection() {
     const currentHost = window.location.hostname.toLowerCase();
     const currentPath = window.location.pathname;
@@ -211,7 +282,6 @@ object UserscriptSource {
       const matched = service.domains.some(d => currentHost === d || currentHost.endsWith('.' + d));
       if (matched) {
         let targetInstance = service.selected.replace(/\/+${'$'}/, '');
-        // Ignore if already on proxy target
         if (window.location.origin === targetInstance) return;
 
         let targetUrl = `${'$'}{targetInstance}${'$'}{currentPath}${'$'}{window.location.search}${'$'}{window.location.hash}`;
@@ -219,155 +289,92 @@ object UserscriptSource {
 
         console.info(`[Proxy Redirect] Forwarding ${'$'}{currentHost} to ${'$'}{targetUrl}`);
         window.location.replace(targetUrl);
-        return;
+        break;
       }
     }
   }
 
   function stripTracking(urlStr) {
     try {
-      const u = new URL(urlStr);
-      const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'si', 'fbclid', 'gclid', 'ref', 'igshid', 'feature'];
-      trackingParams.forEach(p => u.searchParams.delete(p));
-      return u.toString();
+      const url = new URL(urlStr);
+      const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'fbclid', 'gclid', 'si', 'feature'];
+      trackingParams.forEach(p => url.searchParams.delete(p));
+      return url.toString();
     } catch (_) {
       return urlStr;
     }
   }
 
-  // 3. In-Browser Floating Reverse Proxy & Phone Gateway HUD
-  function renderInBrowserHud(latencyMs) {
-    const existingHud = document.getElementById('ngrok-proxy-hud');
-    if (existingHud) existingHud.remove();
-
-    const host = window.location.hostname;
-    let matchingServiceKey = null;
-    for (const [k, s] of Object.entries(proxyServices)) {
-      if (s.domains.some(d => host.includes(d))) {
-        matchingServiceKey = k;
-        break;
-      }
-    }
+  // 4. In-Browser Floating HUD Widget
+  function renderInBrowserHud(latency) {
+    if (document.getElementById('ngrok-agent-hud')) return;
 
     const hud = document.createElement('div');
-    hud.id = 'ngrok-proxy-hud';
+    hud.id = 'ngrok-agent-hud';
     hud.style.cssText = `
       position: fixed;
       bottom: 16px;
       right: 16px;
       z-index: 2147483647;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 12px;
-      color: #E2E8F0;
-      background: #0B1120;
-      border: 1px solid ${'$'}{isBridgeSynced ? '#10B981' : '#F59E0B'};
+      background: rgba(18, 18, 18, 0.94);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.15);
       border-radius: 12px;
-      padding: 10px 14px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      padding: 8px 12px;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 11px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
       display: flex;
-      flex-direction: column;
-      gap: 6px;
-      max-width: 330px;
+      align-items: center;
+      gap: 8px;
+      backdrop-filter: blur(8px);
       transition: all 0.2s ease;
     `;
 
-    const statusBadge = isBridgeSynced
-      ? `<span style="color: #10B981; font-weight: bold;">🟢 Synced (${'$'}{latencyMs || 10}ms)</span>`
-      : `<span style="color: #F59E0B; font-weight: bold;">🟡 Standalone</span>`;
-
-    let phoneInfoHtml = '';
-    if (phoneTelemetry) {
-      const bat = phoneTelemetry.battery ? `${'$'}{phoneTelemetry.battery.percent}%` : '100%';
-      phoneInfoHtml = `
-        <div style="font-size:10px; color:#94A3B8; background:#1E293B; border-radius:6px; padding:3px 6px;">
-          📱 ${'$'}{phoneTelemetry.manufacturer || 'Android'} ${'$'}{phoneTelemetry.device_model || 'Device'} &bull; 🔋 ${'$'}{bat}
-        </div>
-      `;
-    }
-
-    let actionBtnHtml = '';
-    if (matchingServiceKey) {
-      const s = proxyServices[matchingServiceKey];
-      actionBtnHtml = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
-          <span>${'$'}{s.name}:</span>
-          <button id="ngrok-hud-redirect-btn" style="background:#0284C7; color:white; border:none; border-radius:6px; padding:4px 8px; font-size:11px; cursor:pointer; font-weight:bold;">
-            Redirect ➔
-          </button>
-        </div>
-      `;
-    }
-
-    hud.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-weight:bold; color:#38BDF8;">⚡ Phone Gateway & Proxy</span>
-        <button id="ngrok-hud-close" style="background:none; border:none; color:#94A3B8; cursor:pointer; font-size:14px;">✕</button>
-      </div>
-      <div style="font-size:11px;">Status: ${'$'}{statusBadge}</div>
-      ${'$'}{phoneInfoHtml}
-      ${'$'}{actionBtnHtml}
-      <div style="display:flex; gap:6px; margin-top:4px;">
-        <button id="ngrok-hud-proxy-route" style="flex:1; background:#334155; color:#F8FAFC; border:none; border-radius:6px; padding:4px; font-size:10px; cursor:pointer;">
-          Route via Ngrok
-        </button>
-        <button id="ngrok-hud-open-app" style="flex:1; background:#065F46; color:#A7F3D0; border:none; border-radius:6px; padding:4px; font-size:10px; cursor:pointer; font-weight:bold;">
-          Phone Portal
-        </button>
-      </div>
+    const statusDot = document.createElement('span');
+    statusDot.style.cssText = `
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: ${'$'}{isBridgeSynced ? '#4ade80' : '#f87171'};
+      box-shadow: 0 0 6px ${'$'}{isBridgeSynced ? '#4ade80' : '#f87171'};
     `;
 
-    function attachListeners() {
-      document.body.appendChild(hud);
+    const statusText = document.createElement('span');
+    const wsLabel = isWebSocketConnected ? ' • ⚡ WS Live' : '';
+    const phoneLabel = phoneTelemetry?.battery_pct ? ` • 🔋 ${'$'}{phoneTelemetry.battery_pct}%` : '';
+    statusText.textContent = isBridgeSynced
+      ? `Ngrok Agent Synced (${'$'}{latency || 0}ms)${'$'}{wsLabel}${'$'}{phoneLabel}`
+      : 'Ngrok Agent Offline';
+    statusText.style.fontWeight = '600';
 
-      const closeBtn = document.getElementById('ngrok-hud-close');
-      if (closeBtn) {
-        closeBtn.onclick = () => hud.remove();
-      }
+    const actionBtn = document.createElement('button');
+    actionBtn.textContent = 'App GUI';
+    actionBtn.style.cssText = `
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: bold;
+      cursor: pointer;
+    `;
+    actionBtn.onclick = () => window.open(activeBridgeHost, '_blank');
 
-      const redirectBtn = document.getElementById('ngrok-hud-redirect-btn');
-      if (redirectBtn && matchingServiceKey) {
-        redirectBtn.onclick = () => {
-          const s = proxyServices[matchingServiceKey];
-          window.location.href = s.selected + window.location.pathname + window.location.search;
-        };
-      }
-
-      const proxyRouteBtn = document.getElementById('ngrok-hud-proxy-route');
-      if (proxyRouteBtn) {
-        proxyRouteBtn.onclick = () => {
-          const encoded = encodeURIComponent(window.location.href);
-          window.location.href = `${'$'}{activeBridgeHost}/proxy?url=${'$'}{encoded}`;
-        };
-      }
-
-      const openAppBtn = document.getElementById('ngrok-hud-open-app');
-      if (openAppBtn) {
-        openAppBtn.onclick = () => {
-          window.open(`${'$'}{activeBridgeHost}/`, '_blank');
-        };
-      }
-    }
+    hud.appendChild(statusDot);
+    hud.appendChild(statusText);
+    hud.appendChild(actionBtn);
 
     if (document.body) {
-      attachListeners();
+      document.body.appendChild(hud);
     } else {
-      window.addEventListener('DOMContentLoaded', attachListeners);
+      window.addEventListener('DOMContentLoaded', () => document.body && document.body.appendChild(hud));
     }
   }
 
-  // Register Greasemonkey Menu Commands
-  if (typeof GM_registerMenuCommand !== 'undefined') {
-    GM_registerMenuCommand("📱 Open Phone Remote Portal", () => {
-      window.open(`${'$'}{activeBridgeHost}/`, '_blank');
-    });
-    GM_registerMenuCommand("🔄 Re-sync with Android Ngrok Agent", () => {
-      initBridgeHandshake();
-    });
-  }
-
-  // Initial Execution
-  checkAndPerformRedirection();
-  initBridgeHandshake();
+  // Initialize Native WebSocket First (Zero CORS blockers), falling back to HTTP handshake
+  initWebSocketConnection();
 })();
-"""
+""".trimIndent()
 }

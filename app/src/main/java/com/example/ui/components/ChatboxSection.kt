@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,17 +38,22 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.KeyOff
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Psychology
@@ -59,6 +65,8 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -108,6 +116,7 @@ import com.example.chat.BackendHealthReport
 import com.example.chat.ChatManager
 import com.example.chat.ChatMessage
 import com.example.chat.ChatgptOAuthPkceManager
+import com.example.chat.ParsedTokenInfo
 import com.example.ui.theme.StatusAmber
 import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusRed
@@ -147,23 +156,27 @@ fun ChatboxSection(
   val modelCatalogError by ChatManager.modelCatalogError.collectAsState()
   val customBaseUrl by ChatManager.customBaseUrl.collectAsState()
   val reasoningEffort by ChatManager.reasoningEffort.collectAsState()
-  val isOAuthAuth by ChatgptOAuthPkceManager.isAuthenticated.collectAsState()
+  val isAuthenticated by ChatgptOAuthPkceManager.isAuthenticated.collectAsState()
   val authStatus by ChatgptOAuthPkceManager.authStatus.collectAsState()
+  val activeTokenInfo by ChatgptOAuthPkceManager.activeTokenInfo.collectAsState()
 
   val isRecording by GroqWhisperSstManager.isRecording.collectAsState()
   val isTranscribing by GroqWhisperSstManager.isTranscribing.collectAsState()
   val whisperError by GroqWhisperSstManager.lastError.collectAsState()
   val isTtsSpeaking by GroqEnglishTtsManager.isSpeaking.collectAsState()
+  val isTtsSynthesizing by GroqEnglishTtsManager.isSynthesizing.collectAsState()
   val activeUtteranceId by GroqEnglishTtsManager.currentUtteranceId.collectAsState()
+  val ttsError by GroqEnglishTtsManager.lastError.collectAsState()
 
   var inputText by remember { mutableStateOf("") }
   var showModelDropdown by remember { mutableStateOf(false) }
   var showSettingsDialog by remember { mutableStateOf(false) }
+  var showUploadTokenDialog by remember { mutableStateOf(false) }
 
   val selectedModelLabel = availableModels.firstOrNull { it.first == selectedModel }?.second
   val canSend = inputText.isNotBlank() && !isGenerating && !isFetchingModels && selectedModelLabel != null
 
-  LaunchedEffect(isInitialized, isOAuthAuth, authStatus, customBaseUrl, showSettingsDialog) {
+  LaunchedEffect(isInitialized, isAuthenticated, authStatus, customBaseUrl, showSettingsDialog) {
     if (isInitialized && !showSettingsDialog) {
       ChatManager.fetchLiveModelsFromApi(context)
     }
@@ -203,14 +216,14 @@ fun ChatboxSection(
       .padding(horizontal = 14.dp, vertical = 6.dp)
       .testTag("chatbox_section")
   ) {
-    // Top Bar: Model Selector, Reasoning Effort Pill & Settings
+    // Top Bar: Model Selector, Auth Token Status Pill, Reasoning Effort & Settings
     Card(
       modifier = Modifier.fillMaxWidth(),
       shape = RoundedCornerShape(14.dp),
       colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
       elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-      Column(modifier = Modifier.padding(10.dp)) {
+      Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.SpaceBetween,
@@ -276,7 +289,7 @@ fun ChatboxSection(
             }
           }
 
-          // Reasoning Effort Pill & Settings Actions
+          // Reasoning Effort Pill & Actions
           Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
               modifier = Modifier
@@ -313,6 +326,62 @@ fun ChatboxSection(
             }
           }
         }
+
+        // Secondary Row: Direct "Upload / Paste ChatGPT Auth Token" Quick Action Strip
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (isAuthenticated) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else StatusAmber.copy(alpha = 0.15f))
+            .clickable { showUploadTokenDialog = true }
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            Icon(
+              imageVector = if (isAuthenticated) Icons.Default.Verified else Icons.Default.Key,
+              contentDescription = null,
+              tint = if (isAuthenticated) StatusGreen else StatusAmber,
+              modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = if (isAuthenticated) {
+                "Auth: ${activeTokenInfo?.tokenType ?: "Connected"} • ${activeTokenInfo?.preview ?: "Active"}"
+              } else {
+                "No Auth Token • Tap to Upload or Direct Paste"
+              },
+              fontSize = 11.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = if (isAuthenticated) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+              maxLines = 1
+            )
+          }
+
+          Box(
+            modifier = Modifier
+              .clip(RoundedCornerShape(6.dp))
+              .background(if (isAuthenticated) MaterialTheme.colorScheme.primary else StatusAmber)
+              .padding(horizontal = 8.dp, vertical = 3.dp)
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(
+                imageVector = Icons.Default.FileUpload,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(11.dp)
+              )
+              Spacer(modifier = Modifier.width(3.dp))
+              Text(
+                text = if (isAuthenticated) "Manage Token" else "Upload Token",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+              )
+            }
+          }
+        }
       }
     }
 
@@ -335,6 +404,66 @@ fun ChatboxSection(
       }
     }
 
+    // Groq TTS Error Banner
+    if (ttsError != null) {
+      Spacer(modifier = Modifier.height(4.dp))
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .clip(RoundedCornerShape(8.dp))
+          .background(StatusRed.copy(alpha = 0.15f))
+          .padding(8.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = ttsError ?: "",
+            color = StatusRed,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.weight(1f)
+          )
+          TextButton(onClick = { showSettingsDialog = true }) {
+            Text("Settings", fontSize = 10.sp, color = StatusRed)
+          }
+        }
+      }
+    }
+
+    // Active Groq TTS Audio Strip
+    AnimatedVisibility(visible = isTtsSynthesizing || isTtsSpeaking) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .clip(RoundedCornerShape(10.dp))
+          .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
+          .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          if (isTtsSynthesizing) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+          } else {
+            Icon(Icons.Default.VolumeUp, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+          }
+          Spacer(modifier = Modifier.width(6.dp))
+          Text(
+            text = if (isTtsSynthesizing) "Synthesizing with Groq English TTS (Cloud LPU)..." else "Playing Groq English TTS Voice...",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+          )
+        }
+        TextButton(onClick = { GroqEnglishTtsManager.stop() }) {
+          Text("Stop", fontSize = 11.sp, color = StatusRed)
+        }
+      }
+    }
+
     Spacer(modifier = Modifier.height(6.dp))
 
     // Messages List
@@ -350,8 +479,9 @@ fun ChatboxSection(
         ChatMessageBubble(
           message = message,
           isSpeaking = isTtsSpeaking && activeUtteranceId == message.id,
+          isSynthesizing = isTtsSynthesizing && activeUtteranceId == message.id,
           onSpeakClick = {
-            if (isTtsSpeaking && activeUtteranceId == message.id) {
+            if ((isTtsSpeaking || isTtsSynthesizing) && activeUtteranceId == message.id) {
               GroqEnglishTtsManager.stop()
             } else {
               GroqEnglishTtsManager.speak(message.content, utteranceId = message.id)
@@ -507,18 +637,308 @@ fun ChatboxSection(
     }
   }
 
+  // Upload / Direct Paste ChatGPT Auth Token Dialog
+  if (showUploadTokenDialog) {
+    UploadChatgptAuthTokenDialog(
+      onDismiss = { showUploadTokenDialog = false }
+    )
+  }
+
   // Comprehensive AI & Backend Settings Dialog
   if (showSettingsDialog) {
     ComprehensiveAiBackendSettingsDialog(
-      onDismiss = { showSettingsDialog = false }
+      onDismiss = { showSettingsDialog = false },
+      onOpenUploadToken = {
+        showSettingsDialog = false
+        showUploadTokenDialog = true
+      }
     )
   }
+}
+
+/**
+ * Dedicated Upload & Direct Paste ChatGPT Auth Token Dialog
+ * Allows 1-Click File Upload (.json / .env / .txt) or Direct Paste without sign-in
+ */
+@Composable
+fun UploadChatgptAuthTokenDialog(
+  onDismiss: () -> Unit
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var rawTokenInput by remember { mutableStateOf("") }
+  var isApplying by remember { mutableStateOf(false) }
+  var validationMessage by remember { mutableStateOf<String?>(null) }
+  var isSuccess by remember { mutableStateOf(false) }
+
+  val activeTokenInfo by ChatgptOAuthPkceManager.activeTokenInfo.collectAsState()
+  val isAuthenticated by ChatgptOAuthPkceManager.isAuthenticated.collectAsState()
+
+  // File Picker Launcher for JSON / txt / env files
+  val filePickerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.GetContent()
+  ) { uri: Uri? ->
+    if (uri != null) {
+      scope.launch {
+        isApplying = true
+        try {
+          val inputStream = context.contentResolver.openInputStream(uri)
+          if (inputStream != null) {
+            val result = ChatgptOAuthPkceManager.importTokenFromInputStream(context, inputStream)
+            if (result.isSuccess) {
+              val info = result.getOrNull()
+              isSuccess = true
+              validationMessage = "Successfully connected via uploaded file! Token type: ${info?.tokenType ?: "Active"}"
+              Toast.makeText(context, "Auth Token Uploaded & Connected!", Toast.LENGTH_SHORT).show()
+            } else {
+              isSuccess = false
+              validationMessage = "Import failed: ${result.exceptionOrNull()?.message}"
+            }
+          } else {
+            validationMessage = "Could not open selected file."
+          }
+        } catch (e: Exception) {
+          isSuccess = false
+          validationMessage = "File error: ${e.message}"
+        } finally {
+          isApplying = false
+        }
+      }
+    }
+  }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Default.UploadFile, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Upload ChatGPT Auth Token", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+      }
+    },
+    text = {
+      LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        item {
+          Text(
+            text = "Upload a token file (.json, .env, .txt) or paste a valid ChatGPT OAuth access token, session dump, or API key to connect instantly without signing in.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+
+        // 1. Direct File Upload Button
+        item {
+          Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+          ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text("Option 1: Upload Auth / Session File", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+              Text("Supports auth.json, session.json, .env, or raw token text files.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+              Button(
+                onClick = { filePickerLauncher.launch("*/*") },
+                modifier = Modifier.fillMaxWidth().height(40.dp),
+                shape = RoundedCornerShape(8.dp),
+                enabled = !isApplying
+              ) {
+                Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Select & Upload File (.json / .env / .txt)", fontSize = 12.sp)
+              }
+            }
+          }
+        }
+
+        // 2. Direct Paste Input Area
+        item {
+          Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+          ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Text("Option 2: Direct Paste Token", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+
+                TextButton(
+                  onClick = {
+                    val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = cb.primaryClip
+                    if (clip != null && clip.itemCount > 0) {
+                      val text = clip.getItemAt(0).text?.toString() ?: ""
+                      rawTokenInput = text
+                      Toast.makeText(context, "Pasted from clipboard", Toast.LENGTH_SHORT).show()
+                    } else {
+                      Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                    }
+                  }
+                ) {
+                  Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(14.dp))
+                  Spacer(modifier = Modifier.width(4.dp))
+                  Text("Paste Clipboard", fontSize = 11.sp)
+                }
+              }
+
+              OutlinedTextField(
+                value = rawTokenInput,
+                onValueChange = { rawTokenInput = it },
+                label = { Text("Paste Access Token / JWT / JSON / sk-...") },
+                placeholder = { Text("eyJhbGciOiJSUzI1NiIs... or {\"access_token\": \"...\"}") },
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 5,
+                textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                shape = RoundedCornerShape(8.dp)
+              )
+
+              Button(
+                onClick = {
+                  if (rawTokenInput.isNotBlank()) {
+                    scope.launch {
+                      isApplying = true
+                      val result = ChatgptOAuthPkceManager.applyDirectAccessToken(context, rawTokenInput, validateNow = true)
+                      if (result.isSuccess) {
+                        val info = result.getOrNull()
+                        isSuccess = true
+                        validationMessage = "Connected successfully! Token Type: ${info?.tokenType ?: "Active"}"
+                        rawTokenInput = ""
+                        Toast.makeText(context, "Token Connected & Verified!", Toast.LENGTH_SHORT).show()
+                      } else {
+                        isSuccess = false
+                        validationMessage = "Token error: ${result.exceptionOrNull()?.message}"
+                      }
+                      isApplying = false
+                    }
+                  }
+                },
+                modifier = Modifier.fillMaxWidth().height(38.dp),
+                shape = RoundedCornerShape(8.dp),
+                enabled = rawTokenInput.isNotBlank() && !isApplying
+              ) {
+                if (isApplying) {
+                  CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
+                  Spacer(modifier = Modifier.width(6.dp))
+                  Text("Connecting & Validating...", fontSize = 11.sp)
+                } else {
+                  Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(14.dp))
+                  Spacer(modifier = Modifier.width(6.dp))
+                  Text("Apply & Direct Connect", fontSize = 12.sp)
+                }
+              }
+            }
+          }
+        }
+
+        // Validation / Result Message Banner
+        if (validationMessage != null) {
+          item {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (isSuccess) StatusGreen.copy(alpha = 0.15f) else StatusRed.copy(alpha = 0.15f))
+                .padding(10.dp)
+            ) {
+              Text(
+                text = validationMessage ?: "",
+                color = if (isSuccess) StatusGreen else StatusRed,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+              )
+            }
+          }
+        }
+
+        // 3. Active Token Telemetry & Inspection Card
+        if (activeTokenInfo != null && isAuthenticated) {
+          val info = activeTokenInfo!!
+          item {
+            Card(
+              modifier = Modifier.fillMaxWidth(),
+              shape = RoundedCornerShape(10.dp),
+              colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+              Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Active Token In-Use", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = StatusGreen)
+                  }
+
+                  TextButton(
+                    onClick = {
+                      ChatgptOAuthPkceManager.logout(context)
+                      Toast.makeText(context, "Token disconnected", Toast.LENGTH_SHORT).show()
+                    }
+                  ) {
+                    Icon(Icons.Default.KeyOff, contentDescription = null, modifier = Modifier.size(14.dp), tint = StatusRed)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Disconnect", fontSize = 11.sp, color = StatusRed)
+                  }
+                }
+
+                HorizontalDivider()
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                  Text("Type:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  Text(info.tokenType, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                  Text("Preview:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  Text(info.preview, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+
+                if (info.email != null) {
+                  Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Account Email:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(info.email, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                  }
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                  Text("Expiry:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  Text(info.formattedExpiry, fontSize = 11.sp, color = if (info.isExpired) StatusRed else StatusGreen)
+                }
+
+                if (info.scopes.isNotEmpty()) {
+                  Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Scopes:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(info.scopes.joinToString(", "), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      Button(onClick = onDismiss) {
+        Text("Done")
+      }
+    }
+  )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ComprehensiveAiBackendSettingsDialog(
-  onDismiss: () -> Unit
+  onDismiss: () -> Unit,
+  onOpenUploadToken: () -> Unit = {}
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -530,6 +950,8 @@ fun ComprehensiveAiBackendSettingsDialog(
   var reasoningEffortState by remember { mutableStateOf(ChatManager.reasoningEffort.value) }
   var groqApiKeyInput by remember { mutableStateOf(GroqWhisperSstManager.getGroqApiKey(context)) }
   var whisperModelInput by remember { mutableStateOf(GroqWhisperSstManager.getWhisperModel(context)) }
+  var ttsVoiceState by remember { mutableStateOf(GroqEnglishTtsManager.getTtsVoice(context)) }
+  var ttsModelState by remember { mutableStateOf(GroqEnglishTtsManager.getTtsModel(context)) }
   var systemPromptInput by remember { mutableStateOf(ChatManager.systemPrompt.value) }
 
   var hideApiKey by remember { mutableStateOf(true) }
@@ -538,6 +960,8 @@ fun ComprehensiveAiBackendSettingsDialog(
   val isFetchingModels by ChatManager.isFetchingModels.collectAsState()
   val isTestingHealth by ChatManager.isTestingHealth.collectAsState()
   val healthReport by ChatManager.healthReport.collectAsState()
+  val isAuthenticated by ChatgptOAuthPkceManager.isAuthenticated.collectAsState()
+  val activeTokenInfo by ChatgptOAuthPkceManager.activeTokenInfo.collectAsState()
 
   val reasoningOptions = listOf("low", "medium", "high")
   val promptPresets = listOf(
@@ -667,7 +1091,31 @@ fun ComprehensiveAiBackendSettingsDialog(
           }
         }
 
-        // Section 2: Provider Base URL
+        // Section 2: Direct Upload & Connect Auth Token
+        item {
+          Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
+          ) {
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              Text("Upload & Direct Auth Token", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+              Text("Upload or paste any valid access token / session dump to direct connect without sign-in.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+              Button(
+                onClick = onOpenUploadToken,
+                modifier = Modifier.fillMaxWidth().height(36.dp),
+                shape = RoundedCornerShape(8.dp)
+              ) {
+                Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Open Upload / Paste Token Screen", fontSize = 11.sp)
+              }
+            }
+          }
+        }
+
+        // Section 3: Provider Base URL
         item {
           Text("Backend Provider Endpoint", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
           Spacer(modifier = Modifier.height(4.dp))
@@ -706,7 +1154,7 @@ fun ComprehensiveAiBackendSettingsDialog(
 
         item { HorizontalDivider() }
 
-        // Section 3: ChatGPT OAuth 2.0 PKCE & Direct Key
+        // Section 4: ChatGPT OAuth 2.0 PKCE & Direct Key
         item {
           Text("ChatGPT OAuth 2.0 PKCE & API Key", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
           Spacer(modifier = Modifier.height(4.dp))
@@ -778,7 +1226,7 @@ fun ComprehensiveAiBackendSettingsDialog(
 
         item { HorizontalDivider() }
 
-        // Section 4: Reasoning Effort & Model Parameters
+        // Section 5: Reasoning Effort & Model Parameters
         item {
           Text("Reasoning Effort Configuration", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
           Spacer(modifier = Modifier.height(4.dp))
@@ -811,7 +1259,7 @@ fun ComprehensiveAiBackendSettingsDialog(
 
         item { HorizontalDivider() }
 
-        // Section 5: System Instructions Prompt
+        // Section 6: System Instructions Prompt
         item {
           Text("System Instructions Prompt", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
           Spacer(modifier = Modifier.height(6.dp))
@@ -849,9 +1297,10 @@ fun ComprehensiveAiBackendSettingsDialog(
 
         item { HorizontalDivider() }
 
-        // Section 6: Groq Whisper v3 SST & English Voice
+        // Section 7: Pure Groq Voice Engine (Whisper v3 SST + English TTS)
         item {
-          Text("Groq Whisper v3 SST (English Hardcoded)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+          Text("Groq Voice Pipeline (Zero Native Phone TTS)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+          Text("Hardcoded English SST & cloud-native Groq English TTS. Native phone TTS is disabled.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
           Spacer(modifier = Modifier.height(4.dp))
 
           OutlinedTextField(
@@ -879,10 +1328,44 @@ fun ComprehensiveAiBackendSettingsDialog(
               whisperModelInput = it
               GroqWhisperSstManager.setWhisperModel(context, it)
             },
-            label = { Text("Whisper Model (whisper-large-v3)") },
+            label = { Text("Groq SST Model (whisper-large-v3)") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
           )
+
+          Spacer(modifier = Modifier.height(6.dp))
+
+          OutlinedTextField(
+            value = ttsModelState,
+            onValueChange = {
+              ttsModelState = it
+              GroqEnglishTtsManager.setTtsModel(context, it)
+            },
+            label = { Text("Groq TTS Model") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+          )
+
+          Spacer(modifier = Modifier.height(6.dp))
+
+          Text("Groq English TTS Voice Persona:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+          Spacer(modifier = Modifier.height(4.dp))
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            GroqEnglishTtsManager.AVAILABLE_VOICES.forEach { (voiceId, label) ->
+              FilterChip(
+                selected = ttsVoiceState == voiceId,
+                onClick = {
+                  ttsVoiceState = voiceId
+                  GroqEnglishTtsManager.setTtsVoice(context, voiceId)
+                },
+                label = { Text(label, fontSize = 10.sp) }
+              )
+            }
+          }
         }
       }
     },
@@ -898,6 +1381,7 @@ fun ComprehensiveAiBackendSettingsDialog(
 fun ChatMessageBubble(
   message: ChatMessage,
   isSpeaking: Boolean,
+  isSynthesizing: Boolean,
   onSpeakClick: () -> Unit
 ) {
   val context = LocalContext.current
@@ -953,12 +1437,20 @@ fun ChatMessageBubble(
                 onClick = onSpeakClick,
                 modifier = Modifier.size(24.dp)
               ) {
-                Icon(
-                  imageVector = if (isSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
-                  contentDescription = "Speak Aloud in English",
-                  tint = if (isSpeaking) StatusGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                  modifier = Modifier.size(16.dp)
-                )
+                if (isSynthesizing) {
+                  CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                  )
+                } else {
+                  Icon(
+                    imageVector = if (isSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
+                    contentDescription = "Speak Aloud via Groq English TTS",
+                    tint = if (isSpeaking) StatusGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                  )
+                }
               }
             }
 

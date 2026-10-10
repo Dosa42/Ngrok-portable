@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -60,16 +61,17 @@ import com.example.proxy.ReverseProxyManager
 import com.example.tunnel.NgrokConfig
 import com.example.tunnel.NgrokTunnelManager
 import com.example.tunnel.TunnelState
-import com.example.ui.components.BridgeSyncGateScreen
 import com.example.ui.components.ChatboxSection
 import com.example.ui.components.DebugConfigEngineSection
 import com.example.ui.components.EndpointsTesterSection
+import com.example.ui.components.NativeWebSocketSection
 import com.example.ui.components.ReverseProxySection
 import com.example.ui.components.TrafficLogsSection
 import com.example.ui.components.TunnelControlCard
 import com.example.ui.theme.StatusAmber
 import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusRed
+import com.example.websocket.WebSocketManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,15 +79,17 @@ fun MainScreen() {
   val context = LocalContext.current
   val tunnelState by NgrokTunnelManager.state.collectAsState()
   val isBridgeSynced by BridgeSyncManager.isSynced.collectAsState()
-  val devBypass by BridgeSyncManager.devBypass.collectAsState()
   val clientInfo by BridgeSyncManager.clientInfo.collectAsState()
+  val isWsRunning by WebSocketManager.isRunning.collectAsState()
+  val wsPort by WebSocketManager.currentPort.collectAsState()
 
   var selectedTab by remember { mutableIntStateOf(0) }
   val localPort = NgrokConfig.getLocalPort(context)
 
-  // Start local companion server so it is ready to receive userscript handshakes
+  // Start local companion server & native WebSocket server
   LaunchedEffect(localPort) {
     NgrokTunnelManager.ensureLocalServerRunning(localPort, context)
+    WebSocketManager.init(context)
   }
 
   // Request notification permission for Foreground Service notification on Android 13+
@@ -110,31 +114,24 @@ fun MainScreen() {
     is TunnelState.Connecting -> StatusAmber
     is TunnelState.Stopping -> StatusAmber
     is TunnelState.Error -> StatusRed
-    is TunnelState.Disconnected -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+    is TunnelState.Disconnected -> MaterialTheme.colorScheme.outline
   }
-
-  val isUnlocked = isBridgeSynced || devBypass
 
   Scaffold(
     topBar = {
       TopAppBar(
         title = {
-          Row(verticalAlignment = Alignment.CenterVertically) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+          ) {
             Box(
               modifier = Modifier
-                .size(34.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer),
-              contentAlignment = Alignment.Center
-            ) {
-              Icon(
-                imageVector = Icons.Default.Hub,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
-              )
-            }
-            Spacer(modifier = Modifier.width(10.dp))
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(statusDotColor)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
             Column {
               Text(
                 text = "Ngrok Agent",
@@ -142,62 +139,55 @@ fun MainScreen() {
                 fontWeight = FontWeight.Bold
               )
               Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                  modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(statusDotColor)
-                )
-                Spacer(modifier = Modifier.width(5.dp))
                 Text(
                   text = when (tunnelState) {
-                    is TunnelState.Connected -> "Tunnel Online"
+                    is TunnelState.Connected -> "Active • Port $localPort"
                     is TunnelState.Connecting -> "Connecting..."
                     is TunnelState.Stopping -> "Stopping..."
                     is TunnelState.Error -> "Tunnel Error"
-                    is TunnelState.Disconnected -> "Tunnel Idle"
+                    is TunnelState.Disconnected -> "Offline"
                   },
                   fontSize = 11.sp,
                   color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (isWsRunning) {
+                  Text(
+                    text = " • WS :$wsPort",
+                    fontSize = 11.sp,
+                    color = StatusGreen,
+                    fontWeight = FontWeight.SemiBold
+                  )
+                }
               }
             }
           }
         },
         actions = {
-          // Userscript Bridge Status Chip in Header
-          val bridgeColor = when {
-            isBridgeSynced -> StatusGreen
-            devBypass -> StatusAmber
-            else -> MaterialTheme.colorScheme.error
-          }
-          val bridgeText = when {
-            isBridgeSynced -> "Bridge Synced"
-            devBypass -> "Dev Bypass"
-            else -> "Bridge Required"
-          }
-
-          Box(
-            modifier = Modifier
-              .padding(end = 12.dp)
-              .clip(RoundedCornerShape(12.dp))
-              .background(bridgeColor.copy(alpha = 0.15f))
-              .padding(horizontal = 8.dp, vertical = 4.dp)
-          ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(
-                imageVector = if (isBridgeSynced) Icons.Default.CheckCircle else Icons.Default.Sync,
-                contentDescription = null,
-                tint = bridgeColor,
-                modifier = Modifier.size(13.dp)
-              )
-              Spacer(modifier = Modifier.width(4.dp))
-              Text(
-                text = bridgeText,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = bridgeColor
-              )
+          if (isBridgeSynced) {
+            // Fully Synced HUD Badge
+            Box(
+              modifier = Modifier
+                .padding(end = 8.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(StatusGreen.copy(alpha = 0.15f))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .testTag("bridge_synced_badge")
+            ) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                  imageVector = Icons.Default.CheckCircle,
+                  contentDescription = null,
+                  tint = StatusGreen,
+                  modifier = Modifier.size(12.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                  text = "SYNCED (${clientInfo?.latencyMs ?: 0}ms)",
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = StatusGreen
+                )
+              }
             }
           }
         },
@@ -212,17 +202,13 @@ fun MainScreen() {
         .fillMaxSize()
         .padding(innerPadding)
     ) {
-      if (!isUnlocked) {
-        // Gated Screen: Requires Userscript Bridge Synchronized connection
-        BridgeSyncGateScreen(modifier = Modifier.fillMaxSize())
-      } else {
-        // Unlocked Full Dashboard
-        TunnelControlCard(
-          state = tunnelState,
-          modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-        )
+      // Full Dashboard (Bridge Sync Gate removed)
+      TunnelControlCard(
+        state = tunnelState,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+      )
 
-        // Navigation Tabs (5 Tabs with ScrollableTabRow)
+      // Navigation Tabs (6 Tabs with ScrollableTabRow)
         ScrollableTabRow(
           selectedTabIndex = selectedTab,
           containerColor = MaterialTheme.colorScheme.surface,
@@ -253,6 +239,19 @@ fun MainScreen() {
             onClick = { selectedTab = 1 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("WebSocket", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+              }
+            },
+            modifier = Modifier.testTag("tab_websocket")
+          )
+
+          Tab(
+            selected = selectedTab == 2,
+            onClick = { selectedTab = 2 },
+            text = {
+              Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Transform, contentDescription = null, modifier = Modifier.size(15.dp))
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Reverse Proxy", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -262,8 +261,8 @@ fun MainScreen() {
           )
 
           Tab(
-            selected = selectedTab == 2,
-            onClick = { selectedTab = 2 },
+            selected = selectedTab == 3,
+            onClick = { selectedTab = 3 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.PlayCircleOutline, contentDescription = null, modifier = Modifier.size(15.dp))
@@ -275,8 +274,8 @@ fun MainScreen() {
           )
 
           Tab(
-            selected = selectedTab == 3,
-            onClick = { selectedTab = 3 },
+            selected = selectedTab == 4,
+            onClick = { selectedTab = 4 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(15.dp))
@@ -288,8 +287,8 @@ fun MainScreen() {
           )
 
           Tab(
-            selected = selectedTab == 4,
-            onClick = { selectedTab = 4 },
+            selected = selectedTab == 5,
+            onClick = { selectedTab = 5 },
             text = {
               Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(15.dp))
@@ -305,13 +304,13 @@ fun MainScreen() {
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
           when (selectedTab) {
             0 -> ChatboxSection()
-            1 -> ReverseProxySection()
-            2 -> EndpointsTesterSection()
-            3 -> TrafficLogsSection()
-            4 -> DebugConfigEngineSection()
+            1 -> NativeWebSocketSection()
+            2 -> ReverseProxySection()
+            3 -> EndpointsTesterSection()
+            4 -> TrafficLogsSection()
+            5 -> DebugConfigEngineSection()
           }
         }
       }
     }
   }
-}

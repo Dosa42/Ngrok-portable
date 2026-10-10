@@ -14,10 +14,40 @@ import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStream
+import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+data class ParsedTokenInfo(
+  val token: String,
+  val tokenType: String,
+  val expiresAt: Long? = null,
+  val issuedAt: Long? = null,
+  val email: String? = null,
+  val userId: String? = null,
+  val issuer: String? = null,
+  val scopes: List<String> = emptyList(),
+  val preview: String,
+  val rawLength: Int = token.length
+) {
+  val isExpired: Boolean
+    get() = expiresAt != null && expiresAt < System.currentTimeMillis()
+
+  val formattedExpiry: String
+    get() {
+      if (expiresAt == null) return "No Expiry / Static Key"
+      val sdf = SimpleDateFormat("MMM dd, yyyy HH:mm:ss", Locale.getDefault())
+      val expDate = Date(expiresAt)
+      return if (isExpired) "Expired on ${sdf.format(expDate)}" else "Expires on ${sdf.format(expDate)}"
+    }
+}
 
 object ChatgptOAuthPkceManager {
   private const val TAG = "ChatgptOAuthPkce"
@@ -39,17 +69,31 @@ object ChatgptOAuthPkceManager {
     .readTimeout(30, TimeUnit.SECONDS)
     .build()
 
-  private val _authStatus = MutableStateFlow<String>("Not Authenticated")
+  private val _authStatus = MutableStateFlow("Not Authenticated")
   val authStatus: StateFlow<String> = _authStatus.asStateFlow()
 
   private val _isAuthenticated = MutableStateFlow(false)
   val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
 
+  private val _activeTokenInfo = MutableStateFlow<ParsedTokenInfo?>(null)
+  val activeTokenInfo: StateFlow<ParsedTokenInfo?> = _activeTokenInfo.asStateFlow()
+
+  private val _isValidatingToken = MutableStateFlow(false)
+  val isValidatingToken: StateFlow<Boolean> = _isValidatingToken.asStateFlow()
+
   fun init(context: Context) {
     val token = getEffectiveToken(context)
     val hasToken = token.isNotBlank()
     _isAuthenticated.value = hasToken
-    _authStatus.value = if (hasToken) "Authenticated & Ready" else "Not Authenticated"
+    if (hasToken) {
+      val parsed = parseRawTokenInput(token)
+      _activeTokenInfo.value = parsed
+      val typeLabel = parsed?.tokenType ?: "Active"
+      _authStatus.value = if (parsed?.isExpired == true) "Token Expired" else "Connected & Active ($typeLabel)"
+    } else {
+      _activeTokenInfo.value = null
+      _authStatus.value = "Not Authenticated"
+    }
   }
 
   fun getDirectApiKey(context: Context): String {
@@ -64,7 +108,13 @@ object ChatgptOAuthPkceManager {
       .apply()
     val effective = getEffectiveToken(context)
     _isAuthenticated.value = effective.isNotBlank()
-    _authStatus.value = if (effective.isNotBlank()) "API Key Active" else "Not Authenticated"
+    if (effective.isNotBlank()) {
+      val parsed = parseRawTokenInput(effective)
+      _activeTokenInfo.value = parsed
+      _authStatus.value = "Direct Key Active (${parsed?.tokenType ?: "Key"})"
+    } else {
+      _authStatus.value = "Not Authenticated"
+    }
   }
 
   fun getOAuthClientId(context: Context): String {
@@ -200,17 +250,230 @@ object ChatgptOAuthPkceManager {
 
           _isAuthenticated.value = true
           _authStatus.value = "OAuth 2.0 PKCE Connected"
+          _activeTokenInfo.value = parseRawTokenInput(accessToken)
           Log.i(TAG, "OAuth PKCE token exchange succeeded")
           true
         } else {
-          // If public token endpoint failed (e.g. mock / test code), accept code as direct token if configured
           Log.w(TAG, "Token exchange returned ${response.code}: $bodyText")
-          _authStatus.value = "Token error ($response.code). If using custom key, enter API Key."
+          _authStatus.value = "Token error (${response.code}). If using direct token, paste/upload it."
           false
         }
       } catch (e: Exception) {
         Log.e(TAG, "OAuth PKCE token exchange error: ${e.message}", e)
         _authStatus.value = "Exchange failed: ${e.message}"
+        false
+      }
+    }
+  }
+
+  /**
+   * Parses raw token text (JSON dump, raw JWT, .env key-value, Bearer string, HTTP header)
+   */
+  fun parseRawTokenInput(rawInput: String): ParsedTokenInfo? {
+    val trimmed = rawInput.trim()
+    if (trimmed.isBlank()) return null
+
+    var extractedToken = trimmed
+    var extractedExpiresAt: Long? = null
+    var extractedIssuedAt: Long? = null
+    var extractedEmail: String? = null
+    var extractedUserId: String? = null
+    var extractedIssuer: String? = null
+    val extractedScopes = mutableListOf<String>()
+
+    // 1. Check if JSON payload (e.g. session dump, auth.json, OpenAI token response)
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        val json = JSONObject(trimmed)
+        extractedToken = when {
+          json.has("access_token") -> json.getString("access_token")
+          json.has("accessToken") -> json.getString("accessToken")
+          json.has("token") -> json.getString("token")
+          json.has("apiKey") -> json.getString("apiKey")
+          json.has("api_key") -> json.getString("api_key")
+          json.has("key") -> json.getString("key")
+          json.has("chatgpt_token") -> json.getString("chatgpt_token")
+          json.has("session") -> {
+            val sessionObj = json.getJSONObject("session")
+            sessionObj.optString("accessToken", sessionObj.optString("access_token", trimmed))
+          }
+          json.has("auth") -> {
+            val authObj = json.getJSONObject("auth")
+            authObj.optString("accessToken", authObj.optString("access_token", trimmed))
+          }
+          else -> trimmed
+        }
+        if (json.has("expires_at")) extractedExpiresAt = json.optLong("expires_at")
+        if (json.has("expiresAt")) extractedExpiresAt = json.optLong("expiresAt")
+        if (json.has("email")) extractedEmail = json.optString("email")
+        if (json.has("user")) extractedEmail = json.optJSONObject("user")?.optString("email")
+      } catch (_: Exception) {}
+    } else if (trimmed.contains("=") && (trimmed.contains("TOKEN") || trimmed.contains("KEY") || trimmed.contains("OPENAI"))) {
+      // 2. Check if .env or key-value format: OPENAI_API_KEY=sk-... or ACCESS_TOKEN=eyJ...
+      trimmed.lines().forEach { line ->
+        val l = line.trim()
+        if (l.startsWith("OPENAI_API_KEY=") ||
+            l.startsWith("ACCESS_TOKEN=") ||
+            l.startsWith("CHATGPT_TOKEN=") ||
+            l.startsWith("AUTH_TOKEN=") ||
+            l.startsWith("BEARER_TOKEN=") ||
+            l.startsWith("OPENAI_TOKEN=")) {
+          extractedToken = l.substringAfter("=").trim('"', '\'', ' ')
+        }
+      }
+    }
+
+    // 3. Remove optional "Authorization:" / "Bearer " prefix
+    if (extractedToken.startsWith("Authorization:", ignoreCase = true)) {
+      extractedToken = extractedToken.substringAfter("Authorization:").trim()
+    }
+    if (extractedToken.startsWith("Bearer ", ignoreCase = true)) {
+      extractedToken = extractedToken.substring(7).trim()
+    }
+
+    // Determine type & inspect JWT payload claims if present
+    var type = "API Key / Bearer"
+    if (extractedToken.count { it == '.' } == 2) {
+      type = "JWT OAuth Access Token"
+      try {
+        val parts = extractedToken.split(".")
+        if (parts.size >= 2) {
+          val payloadBase64 = parts[1]
+          val payloadJsonStr = String(Base64.decode(payloadBase64, Base64.URL_SAFE or Base64.NO_PADDING), StandardCharsets.UTF_8)
+          val payloadJson = JSONObject(payloadJsonStr)
+
+          val exp = payloadJson.optLong("exp", 0)
+          if (exp > 0) {
+            extractedExpiresAt = exp * 1000
+          }
+          val iat = payloadJson.optLong("iat", 0)
+          if (iat > 0) {
+            extractedIssuedAt = iat * 1000
+          }
+          if (extractedEmail == null) {
+            extractedEmail = payloadJson.optString("email",
+              payloadJson.optString("https://api.openai.com/profile.email",
+                payloadJson.optString("https://api.openai.com/profile.user", null)))
+          }
+          extractedUserId = payloadJson.optString("sub", payloadJson.optString("user_id", null))
+          extractedIssuer = payloadJson.optString("iss", null)
+
+          val scopeStr = payloadJson.optString("scope", "")
+          if (scopeStr.isNotBlank()) {
+            extractedScopes.addAll(scopeStr.split(" "))
+          }
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "JWT claim decoding notice: ${e.message}")
+      }
+    } else if (extractedToken.startsWith("sk-proj-") || extractedToken.startsWith("sk-")) {
+      type = "OpenAI Secret Key"
+    } else if (extractedToken.length > 40) {
+      type = "Access / Session Token"
+    }
+
+    val preview = if (extractedToken.length > 20) {
+      "${extractedToken.take(10)}...${extractedToken.takeLast(8)}"
+    } else {
+      extractedToken
+    }
+
+    return ParsedTokenInfo(
+      token = extractedToken,
+      tokenType = type,
+      expiresAt = extractedExpiresAt,
+      issuedAt = extractedIssuedAt,
+      email = extractedEmail,
+      userId = extractedUserId,
+      issuer = extractedIssuer,
+      scopes = extractedScopes,
+      preview = preview,
+      rawLength = extractedToken.length
+    )
+  }
+
+  /**
+   * Import token from an InputStream (e.g. from File Picker)
+   */
+  suspend fun importTokenFromInputStream(context: Context, inputStream: InputStream): Result<ParsedTokenInfo> {
+    return withContext(Dispatchers.IO) {
+      try {
+        val reader = BufferedReader(InputStreamReader(inputStream, StandardCharsets.UTF_8))
+        val content = reader.readText()
+        reader.close()
+        applyDirectAccessToken(context, content, validateNow = true)
+      } catch (e: Exception) {
+        Log.e(TAG, "Failed reading token file stream: ${e.message}", e)
+        Result.failure(e)
+      }
+    }
+  }
+
+  /**
+   * Direct Upload / Paste Access Token: Connects immediately without needing to sign in
+   */
+  suspend fun applyDirectAccessToken(
+    context: Context,
+    rawInput: String,
+    validateNow: Boolean = true
+  ): Result<ParsedTokenInfo> {
+    val info = parseRawTokenInput(rawInput)
+      ?: return Result.failure(Exception("Could not extract a valid access token or API key from input"))
+
+    return withContext(Dispatchers.IO) {
+      try {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+          .putString(KEY_ACCESS_TOKEN, info.token)
+          .apply()
+
+        if (info.expiresAt != null) {
+          prefs.edit().putLong(KEY_EXPIRES_AT, info.expiresAt).apply()
+        }
+
+        _isAuthenticated.value = true
+        _activeTokenInfo.value = info
+        _authStatus.value = "Direct Token Connected (${info.tokenType})"
+        Log.i(TAG, "Applied direct uploaded auth token: ${info.preview}")
+
+        if (validateNow) {
+          validateTokenWithApi(context, info.token)
+        }
+
+        Result.success(info)
+      } catch (e: Exception) {
+        Log.e(TAG, "Failed to apply auth token: ${e.message}", e)
+        Result.failure(e)
+      }
+    }
+  }
+
+  /**
+   * Validates the active token against /v1/models endpoint
+   */
+  suspend fun validateTokenWithApi(context: Context, token: String): Boolean {
+    _isValidatingToken.value = true
+    return withContext(Dispatchers.IO) {
+      try {
+        val baseUrl = ChatManager.customBaseUrl.value
+        val request = Request.Builder()
+          .url("$baseUrl/models")
+          .header("Authorization", "Bearer $token")
+          .get()
+          .build()
+
+        val response = httpClient.newCall(request).execute()
+        val success = response.isSuccessful
+        if (success) {
+          _authStatus.value = "🟢 Active & Verified (${_activeTokenInfo.value?.tokenType ?: "Token"})"
+        } else {
+          _authStatus.value = "⚠️ Token Active (HTTP ${response.code})"
+        }
+        _isValidatingToken.value = false
+        success
+      } catch (e: Exception) {
+        _authStatus.value = "🟡 Connected (Offline Check)"
+        _isValidatingToken.value = false
         false
       }
     }
@@ -222,9 +485,11 @@ object ChatgptOAuthPkceManager {
       .remove(KEY_ACCESS_TOKEN)
       .remove(KEY_REFRESH_TOKEN)
       .remove(KEY_DIRECT_API_KEY)
+      .remove(KEY_EXPIRES_AT)
       .apply()
     _isAuthenticated.value = false
-    _authStatus.value = "Logged Out"
+    _activeTokenInfo.value = null
+    _authStatus.value = "Not Authenticated"
   }
 
   private fun UUIDRandom(): String {

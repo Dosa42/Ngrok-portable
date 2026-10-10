@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import com.example.websocket.WebSocketManager
 
 class NgrokApplication : Application() {
 
@@ -16,6 +17,13 @@ class NgrokApplication : Application() {
       android.util.Log.i("NgrokApplication", "Eagerly initialized ngrok native JNI runtime")
     } catch (t: Throwable) {
       android.util.Log.w("NgrokApplication", "Early native runtime initialization warning: ${t.message}")
+    }
+
+    try {
+      WebSocketManager.init(this)
+      android.util.Log.i("NgrokApplication", "Eagerly initialized native local WebSocket server")
+    } catch (e: Exception) {
+      android.util.Log.w("NgrokApplication", "WebSocket early init warning: ${e.message}")
     }
   }
 

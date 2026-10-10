@@ -113,6 +113,11 @@ object BridgeSyncManager {
     }
   }
 
+  fun toggleDevBypass() {
+    val newState = !_devBypass.value
+    setDevBypass(newState)
+  }
+
   fun setDevBypass(bypass: Boolean) {
     _devBypass.value = bypass
     addLog("SYSTEM", if (bypass) "⚠️ Developer bypass enabled: Dashboard unlocked without userscript" else "🔒 Developer bypass disabled: Userscript sync required", true)
